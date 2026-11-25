@@ -40,8 +40,9 @@ internal class SonyControl(private val context: Context, private val deviceForAd
     private val locationRevision = MutableStateFlow(0)
     val locationChanges = locationRevision.asStateFlow()
 
-    suspend fun pair(target: BleCamera, registered: Boolean, progress: (String) -> Unit): String {
+    suspend fun pair(target: BleCamera, restoreOnly: Boolean, progress: (String) -> Unit): String {
         val device = deviceForAddress(target.address)
+        check(!restoreOnly || device.bondState != BluetoothDevice.BOND_NONE) { "系统配对已移除，请重新配对这台相机" }
         check(target.pairingAvailable || device.bondState == BluetoothDevice.BOND_BONDED) { "请在机身打开「智能手机连接」，再选择这台相机" }
         val systemPairing = usesSonySystemPairing(Build.VERSION.SDK_INT, Build.MANUFACTURER)
         if (!systemPairing && device.bondState == BluetoothDevice.BOND_NONE) {
@@ -62,7 +63,8 @@ internal class SonyControl(private val context: Context, private val deviceForAd
             try {
                 if (!confirmed) {
                     if (bonded) progress("正在核对已有配对")
-                    if (!bonded || (!systemPairing && !registered && !link.acceptsExistingBond())) {
+                    check(!restoreOnly || bonded) { "系统配对未确认，请核对这台相机的配对状态" }
+                    if (!bonded || (!restoreOnly && !systemPairing && !link.acceptsExistingBond())) {
                         link.pair(device, systemPairing, progress)
                     }
                     confirmed = true
@@ -92,7 +94,7 @@ internal class SonyControl(private val context: Context, private val deviceForAd
 
     suspend fun networkId(address: String): UUID? {
         val device = deviceForAddress(address)
-        check(device.bondState == BluetoothDevice.BOND_BONDED) { "索尼系统配对已移除，请重新添加相机" }
+        check(device.bondState == BluetoothDevice.BOND_BONDED) { "索尼系统配对已移除，请重新配对这台相机" }
         return session(device).networkId()
     }
 
@@ -342,7 +344,7 @@ internal class SonyBleSession(
         if (supportsFunction(SonyControlData.SSH_INFO, 0xcc17)) readAccess(device) else null
 
     private suspend fun readAccess(device: BluetoothDevice): SonyAccess? {
-        check(device.bondState == BluetoothDevice.BOND_BONDED) { "索尼系统配对已移除，请重新添加相机" }
+        check(device.bondState == BluetoothDevice.BOND_BONDED) { "索尼系统配对已移除，请重新配对这台相机" }
         return SonyControlData.access(read(required(0xcc17), 30_000))
     }
 

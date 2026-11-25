@@ -14,6 +14,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.prooftray.app.domain.AppSettings
 import org.prooftray.app.domain.MediaFormat
+import org.prooftray.app.domain.SavedCamera
 import org.prooftray.app.domain.photoMimeType
 
 class SonyImportTest {
@@ -136,7 +137,7 @@ class SonyImportTest {
         assertEquals(CameraMake.NIKON, ptpCameraMake("Nikon Corporation", 10))
         val commands = previewCommands(true, setOf(GET_FHD_PICTURE, GET_LSS_IMAGE), false, emptySet())
         assertEquals(listOf(GET_THUMB), commands.map { it.operation })
-        assertFalse(AppSettings(autoDownload = true, sonySelected = true).automaticEnabled)
+        assertFalse(AppSettings(autoDownload = true).withCamera(SavedCamera("1", CameraMake.SONY, "Sony", "sony")).automaticEnabled)
         assertTrue(AppSettings(autoDownload = true).automaticEnabled)
     }
 }

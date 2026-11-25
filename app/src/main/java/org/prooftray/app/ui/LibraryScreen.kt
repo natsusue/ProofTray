@@ -286,7 +286,7 @@ private fun LibraryContent(state: LibraryUiState, actions: LibraryActions, showA
                         onCamera = ::openCamera, onRegister = { registering = true }, onFilters = { showingFilters = true },
                         onExpand = { expandedGroupId = it }, onPreview = { previewId = it })
                     MainTab.TASKS -> TransferScreen(state.transferState(), actions.transfers, taskExports) { taskExports = it }
-                    MainTab.SETTINGS -> SettingsScreen(state, actions, onCamera = { openCamera() },
+                    MainTab.SETTINGS -> SettingsScreen(state, actions, onCamera = ::openCamera,
                         onAbout = { showingAbout = true }, onManage = { showingColorLibrary = true })
                 }
             }

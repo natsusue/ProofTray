@@ -1,6 +1,7 @@
 package org.prooftray.app.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -29,12 +31,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import org.prooftray.app.camera.CameraConnection
@@ -43,7 +48,7 @@ import org.prooftray.app.camera.CameraMode
 import org.prooftray.app.camera.ConnectionPhase
 import org.prooftray.app.camera.SonyAccess
 
-internal enum class CameraPanel { SEARCH, MANUAL, DIAGNOSTICS }
+internal enum class CameraPanel { DEVICES, SEARCH, MANUAL, DIAGNOSTICS }
 
 @Composable
 internal fun CameraScreen(
@@ -51,8 +56,9 @@ internal fun CameraScreen(
     modifier: Modifier = Modifier, initialPanel: CameraPanel? = null
 ) {
     var panel by rememberSaveable { mutableStateOf(initialPanel) }
-    var manualMode by rememberSaveable { mutableStateOf(CameraMode.AP) }
+    var manualMode by rememberSaveable(state.settings.selectedCameraId) { mutableStateOf(CameraMode.AP) }
     var menu by remember { mutableStateOf(false) }
+    var pendingSwitch by remember(state.settings.selectedCameraId) { mutableStateOf<Pair<String, () -> Unit>?>(null) }
     fun openPanel(next: CameraPanel?) {
         menu = false
         if (panel == CameraPanel.SEARCH && next != panel) actions.onStopBleScan()
@@ -61,12 +67,33 @@ internal fun CameraScreen(
     }
     BackHandler(enabled = panel != null) { openPanel(null) }
     val summary = cameraConnectionSummary(state)
+    val addReason = when {
+        state.cameraTransferRunning -> "请先完成或停止当前传图"
+        state.camera.connected -> "请先断开当前相机"
+        summary.busy -> "等待当前连接操作完成"
+        !state.ble.adapterEnabled -> "请先打开手机蓝牙"
+        else -> null
+    }
+    fun switchTo(label: String, change: () -> Unit) {
+        if (state.cameraSelectionBlock != null) return
+        if (state.hasCameraConnection) pendingSwitch = label to change else change()
+    }
+    fun selectCamera(id: String) {
+        val target = state.settings.cameras.firstOrNull { it.id == id } ?: return
+        if (id == state.settings.selectedCameraId && state.camera.pairingTarget == null &&
+            (!state.camera.connected || state.camera.activeCameraId == id)) {
+            openPanel(null)
+        } else switchTo(target.selectionLabel(state.settings.cameras)) {
+            openPanel(null)
+            actions.onSelectCamera(id)
+        }
+    }
     val saved = state.settings.selectedAddress.isNotBlank()
     val nikon = state.hasSelectedNikon
     val pairing = state.camera.pairingTarget
     val showNikonDiagnostics = if (pairing != null) pairing.make == CameraMake.NIKON else !state.settings.sonySelected
     LaunchedEffect(initialPanel) {
-        if (initialPanel == CameraPanel.SEARCH && !state.ble.scanning) actions.onScanBle()
+        if (initialPanel == CameraPanel.SEARCH && panel == CameraPanel.SEARCH && !state.ble.scanning && addReason == null) actions.onScanBle()
     }
     val primary = cameraPrimaryAction(state, summary)
     LazyColumn(modifier = modifier, contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
@@ -74,21 +101,20 @@ internal fun CameraScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(state.connectionCameraName.ifBlank { "我的相机" }, style = MaterialTheme.typography.headlineSmall)
+                    val canSelect = state.settings.cameras.isNotEmpty()
+                    Column(Modifier.weight(1f).clickable(enabled = canSelect, onClickLabel = "查看我的相机") { openPanel(CameraPanel.DEVICES) },
+                        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(state.connectionCameraName.ifBlank { "我的相机" }, Modifier.weight(1f, fill = false),
+                                style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (canSelect) AppIcon(AppGlyph.FORWARD, modifier = Modifier.rotate(90f))
+                        }
                         Text(summary.title, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Box {
                         IconButton(onClick = { menu = true }) { AppIcon(AppGlyph.MORE, "连接选项") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                            val changeReason = when {
-                                state.camera.connected -> "先断开当前相机"
-                                summary.busy -> "等待当前连接操作完成"
-                                !state.ble.adapterEnabled -> "先打开手机蓝牙"
-                                state.automatic.transferring -> "先停止蓝牙接收"
-                                else -> null
-                            }
-                            ConnectionMenuItem("添加或切换相机", changeReason) { openPanel(CameraPanel.SEARCH) }
+                            ConnectionMenuItem("添加新相机", addReason) { openPanel(CameraPanel.SEARCH) }
                             ConnectionMenuItem("手动连接相机热点", "等待当前连接操作完成".takeIf { summary.busy }) {
                                 manualMode = CameraMode.AP
                                 openPanel(CameraPanel.MANUAL)
@@ -127,11 +153,13 @@ internal fun CameraScreen(
                 }, enabled = !summary.busy, modifier = Modifier.fillMaxWidth()) {
                     Text(if (lanOpen) "收起局域网连接" else "通过同一局域网连接")
                 }
-                ManualConnection(state, actions, visible = panel == CameraPanel.MANUAL, mode = manualMode,
-                    onModeChange = { manualMode = it }, onRegister = onRegister)
+                key(state.settings.selectedCameraId) {
+                    ManualConnection(state, actions, visible = panel == CameraPanel.MANUAL, mode = manualMode,
+                        onModeChange = { manualMode = it }, onRegister = onRegister)
+                }
                 if (nikon) {
                     val wifi = state.camera.connected
-                    val bluetooth = state.ble.authenticated && state.ble.systemPaired && !state.ble.pairingInProgress
+                    val bluetooth = summary.bluetoothReady
                     val reconnectBle = failed && bluetooth
                     val canSwitchBluetooth = wifi || (!state.automatic.transferring && (!bluetooth || reconnectBle))
                     val label = when {
@@ -170,18 +198,27 @@ internal fun CameraScreen(
         }
         item {
             AnimatedVisibility(panel == CameraPanel.SEARCH) {
-                SectionCard("添加 / 切换相机", "在机身的智能手机连接菜单中开始配对。", AppGlyph.BLUETOOTH) {
+                SectionCard("添加新相机", "在机身的智能手机连接菜单中开始配对。", AppGlyph.BLUETOOTH) {
                     if (state.ble.scanning) LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text(state.ble.message, style = MaterialTheme.typography.bodySmall)
                     if (!state.ble.scanning && state.ble.cameras.isEmpty()) Text("未发现相机")
                     state.ble.cameras.forEach { camera ->
-                        OutlinedButton(onClick = { panel = null; actions.onConnectBle(camera) },
-                            enabled = camera.pairingAvailable && !summary.busy && !state.camera.connected, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (camera.pairingAvailable) camera.name else "${camera.name} · 请在机身打开「智能手机连接」")
+                        val target = state.settings.cameras.singleOrNull { it.make == camera.make && camera.address.equals(it.controlAddress, true) }
+                        OutlinedButton(onClick = {
+                            if (target != null && target.hasScanRegistration) selectCamera(target.id)
+                            else switchTo(camera.name) { panel = null; actions.onConnectBle(camera) }
+                        }, enabled = (target?.hasScanRegistration == true || camera.pairingAvailable) && addReason == null,
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text(when {
+                                target?.hasScanRegistration == true -> "${target.selectionLabel(state.settings.cameras)} · 已保存"
+                                target != null && camera.pairingAvailable -> "${target.selectionLabel(state.settings.cameras)} · 完成配对"
+                                camera.pairingAvailable -> camera.name
+                                else -> "${camera.name} · 请在机身打开「智能手机连接」"
+                            })
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = actions.onScanBle, enabled = !state.ble.scanning && !summary.busy && !state.camera.connected) {
+                        TextButton(onClick = actions.onScanBle, enabled = !state.ble.scanning && addReason == null) {
                             Text("重新搜索")
                         }
                         TextButton(onClick = { openPanel(null) }) { Text("停止搜索") }
@@ -228,7 +265,16 @@ internal fun CameraScreen(
             TextButton(onClick = { openPanel(null) }) { Text("收起") }
         }
     }
-
+    if (panel == CameraPanel.DEVICES) {
+        CameraDeviceSheet(state, actions, addReason, ::selectCamera, { openPanel(CameraPanel.SEARCH) }, { openPanel(null) })
+    }
+    pendingSwitch?.let { (target, change) ->
+        val source = state.currentCameraLabel
+        AlertDialog(onDismissRequest = { pendingSwitch = null }, title = { Text("断开 $source 并切换到 $target？") },
+            text = state.cameraSelectionBlock?.let { reason -> { Text(reason) } },
+            confirmButton = { TextButton(onClick = { pendingSwitch = null; change() }, enabled = state.cameraSelectionBlock == null) { Text("切换") } },
+            dismissButton = { TextButton(onClick = { pendingSwitch = null }) { Text("取消") } })
+    }
 }
 
 @Composable

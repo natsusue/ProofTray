@@ -239,18 +239,22 @@ internal class NikonBle(private val context: Context, private val scope: Corouti
 
     private fun registeredClientId(): Int = identities.bleIdentity()?.let(::nikonClientId) ?: error("请先完成本应用的 BLE 配对")
 
-    fun registeredAdvertisement(camera: BleCamera): Boolean = camera.advertisedClientId == registeredClientId()
+    fun registeredAdvertisement(camera: BleCamera): Boolean =
+        identities.bleIdentity()?.let { camera.advertisedClientId == nikonClientId(it) } ?: false
 
     suspend fun rediscover(names: Set<String>, previousAddress: String, expectedSerial: String? = null, registered: Boolean = true,
-        retryLastAddress: Boolean = registered): BleCamera {
+        retryLastAddress: Boolean = registered, knownId: String? = null): BleCamera {
         require(previousAddress.isNotBlank() || names.any(String::isNotBlank)) { "尚未记录相机，请先搜索并选择相机" }
         val clientId = if (registered) registeredClientId() else null
         val previousDevice = discovered[previousAddress]
         val scanToken = synchronized(this) { scan(stopAfterMillis = null); scanGeneration }
         if (state.value.scanning) connectionMessage("正在重新发现已关联相机；休眠唤醒可能需要片刻")
         try {
+            val others = settings.state.value.cameras.filter { it.make == CameraMake.NIKON && it.id != knownId }
+            val allowName = expectedSerial != null || others.none { matchesCameraName(it.name, names) }
             fun target(item: BleCamera) = !item.classic && item.make == CameraMake.NIKON &&
-                (item.address == previousAddress || matchesCameraName(item.name, names))
+                (item.address == previousAddress || (allowName && matchesCameraName(item.name, names) &&
+                    others.none { it.controlAddress.equals(item.address, true) }))
             fun accepted(item: BleCamera) = target(item) && (clientId == null || item.advertisedClientId == clientId)
             val first = withTimeoutOrNull(if (retryLastAddress) 4000L else 20_000L) {
                 state.first { snapshot -> !snapshot.scanning || snapshot.cameras.any { item ->
@@ -269,7 +273,7 @@ internal class NikonBle(private val context: Context, private val scope: Corouti
             val matches = result.cameras.filter(::accepted)
             check(matches.size <= 1) { "发现多台同名尼康机身，请从搜索列表重新选择" }
             matches.singleOrNull()?.let { return it }
-            check(!registered || result.cameras.none(::target)) { "机身广播未确认这台手机的登记，请在前台核对配对" }
+            check(!registered || result.cameras.none(::target)) { "请在机身「已配对设备」中选回这台手机；若登记已移除，请重新配对" }
             if (retryLastAddress && previousAddress.isNotBlank()) {
                 if (previousDevice != null) discovered.putIfAbsent(previousAddress, previousDevice)
                 return BleCamera(previousAddress, names.firstOrNull().orEmpty())
@@ -279,7 +283,7 @@ internal class NikonBle(private val context: Context, private val scope: Corouti
     }
 
     /** Wait for a selected camera's pending-image advertisement without opening GATT or repeatedly waking the camera. */
-    suspend fun awaitTransferAdvertisement(names: Set<String>): BleCamera {
+    suspend fun awaitTransferAdvertisement(names: Set<String>, accepts: (BleCamera) -> Boolean): BleCamera {
         check(refreshAdapterState()) { "请先打开手机蓝牙" }
         require(names.any(String::isNotBlank)) { "请先关联相机" }
         val scanner = adapter.bluetoothLeScanner ?: error("蓝牙扫描不可用")
@@ -296,7 +300,7 @@ internal class NikonBle(private val context: Context, private val scope: Corouti
                     received.set(true)
                     if (!pending.isActive) return
                     val camera = advertisedCamera(result)
-                    if (camera.advertisedClientId != clientId || !matchesCameraName(camera.name, names) ||
+                    if (camera.advertisedClientId != clientId || !matchesCameraName(camera.name, names) || !accepts(camera) ||
                         !advertisementHasTransfers(camera.advertisementFlags)) return
                     discovered[result.device.address] = result.device
                     pending.complete(camera)
@@ -673,6 +677,10 @@ internal class NikonBle(private val context: Context, private val scope: Corouti
         wakeGatt = null
         mutableState.update { it.copy(authenticated = false, connectedAddress = "", imageTransferRequested = false,
             connectionRequested = false, locationRequested = false, timeRequested = false, serialNumber = "", modelNumber = "") }
+    }
+
+    fun clearDeviceState() {
+        mutableState.update { BleState(adapterEnabled = it.adapterEnabled) }
     }
 
     fun close() = disconnect()

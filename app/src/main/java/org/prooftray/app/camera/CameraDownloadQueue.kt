@@ -81,8 +81,10 @@ internal class CameraDownloadQueue(
 
     private suspend fun nextWifiTask(): CameraDownload? = withTasks { tasks ->
         val camera = state.value
-        if (camera.connected && !camera.paused) tasks.firstOrNull { it.channel == DownloadChannel.WIFI && it.status == DownloadStatus.QUEUED }
-        else null
+        if (!camera.connected || camera.connecting || camera.paused) return@withTasks null
+        tasks.firstOrNull {
+            it.channel == DownloadChannel.WIFI && it.status == DownloadStatus.QUEUED && it.photo.cameraIdentity == camera.sourceId
+        }
     }
 
     suspend fun enqueue(photos: List<RemotePhoto>, variant: DownloadVariant, automatic: Boolean) {
@@ -138,7 +140,7 @@ internal class CameraDownloadQueue(
         }
     }
 
-    fun retry(id: String, retryBluetooth: () -> Unit) {
+    fun retry(id: String, retryBluetooth: (String) -> Unit) {
         scope.launch {
             val task = withTasks { tasks -> tasks.find { it.id == id } } ?: return@launch
             check(task.status == DownloadStatus.WAITING || task.status == DownloadStatus.CANCELLED) { "只有中断或取消的任务可以重试" }
@@ -151,13 +153,13 @@ internal class CameraDownloadQueue(
                 updateTask(id) { it.copy(status = DownloadStatus.WAITING, outputUri = null, received = 0, payloadBytes = 0) }
             }
             if (task.channel == DownloadChannel.BLUETOOTH) {
-                retryBluetooth()
+                retryBluetooth(task.photo.cameraIdentity)
                 return@launch
             }
             val identity = source.identity
             val current = source.photo(task.photo.asset.id)
             if (!state.value.connected || current == null || current.cameraIdentity != identity || task.photo.cameraIdentity != identity) {
-                val message = if (state.value.connected) "请刷新导入列表；若照片已重新编目，请重新选择原片导入"
+                val message = if (state.value.connected && identity == task.photo.cameraIdentity) "请刷新导入列表；若照片已重新编目，请重新选择原片导入"
                     else "请连接原来的相机，刷新导入列表后重试"
                 updateTask(id) { it.copy(status = DownloadStatus.WAITING, message = message) }
                 return@launch
@@ -223,9 +225,9 @@ internal class CameraDownloadQueue(
         var current = task
         try {
             checkNotCancelled(task.id)
+            val link = source.active()
             val photo = source.photo(task.photo.asset.id) ?: error("目录尚未重新确认，请刷新相机目录后重试")
             check(photo.cameraIdentity == source.identity && task.photo.cameraIdentity == source.identity) { "已连接的相机与任务不一致" }
-            val link = source.active()
             val latest = request(link) { it.objectInfo(photo.handle, verify = true) }
             check(latest.getString("name") == photo.asset.name && latest.getLong("size") == photo.asset.sizeBytes &&
                 latest.getString("captured") == photo.captured) { "相机文件已改变，不能继续旧任务" }

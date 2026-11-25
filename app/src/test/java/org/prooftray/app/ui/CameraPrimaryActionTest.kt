@@ -9,11 +9,13 @@ import org.prooftray.app.camera.CameraMake
 import org.prooftray.app.camera.ConnectionPhase
 import org.prooftray.app.camera.disconnected
 import org.prooftray.app.domain.AppSettings
+import org.prooftray.app.domain.SavedCamera
 
 class CameraPrimaryActionTest {
     private val empty = LibraryUiState(ble = BleState(adapterEnabled = true))
-    private val nikon = empty.copy(settings = AppSettings(controlAddress = "nikon"), camera = empty.camera.copy(make = CameraMake.NIKON))
-    private val sony = empty.copy(settings = AppSettings(sonySelected = true, sonyAddress = "sony"),
+    private val nikon = empty.copy(settings = AppSettings().withCamera(SavedCamera("1", CameraMake.NIKON, "Nikon", "nikon")),
+        camera = empty.camera.copy(make = CameraMake.NIKON))
+    private val sony = empty.copy(settings = AppSettings().withCamera(SavedCamera("2", CameraMake.SONY, "Sony", "sony")),
         camera = empty.camera.copy(make = CameraMake.SONY))
 
     @Test fun newCameraAndDisabledBluetoothOfferUsableActions() {

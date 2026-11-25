@@ -2,6 +2,7 @@ package org.prooftray.app.ui
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.prooftray.app.camera.CameraMake
 import org.prooftray.app.domain.AppSettings
 import org.prooftray.app.domain.DownloadState
 import org.prooftray.app.domain.DownloadVariant
@@ -9,6 +10,7 @@ import org.prooftray.app.domain.MediaFormat
 import org.prooftray.app.domain.PhotoAsset
 import org.prooftray.app.domain.PhotoBrowserState
 import org.prooftray.app.domain.PhotoCollection
+import org.prooftray.app.domain.SavedCamera
 import org.prooftray.app.domain.cameraCaptureKey
 import org.prooftray.app.domain.cameraFileKey
 import org.prooftray.app.domain.collectionAssets
@@ -53,7 +55,7 @@ class OriginalStateTest {
         fun newPhotos(variant: DownloadVariant) = collectionAssets(listOf(photo), browser, photo.sourceId, setOf(photo.id), variant)
 
         assertEquals(emptyList<PhotoAsset>(), newPhotos(settings.effectiveManualVariant))
-        val sony = settings.copy(sonySelected = true).effectiveManualVariant
+        val sony = settings.withCamera(SavedCamera("1", CameraMake.SONY, "Sony", "sony")).effectiveManualVariant
         assertEquals(DownloadVariant.ORIGINAL, sony)
         assertEquals(OriginalState.CAMERA, importState(photo, sony))
         assertEquals(listOf(photo), newPhotos(sony))

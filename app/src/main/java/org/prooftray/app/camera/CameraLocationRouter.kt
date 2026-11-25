@@ -27,8 +27,10 @@ internal class CameraLocationRouter(
         val selected = settings.state.value
         fun selectionCurrent(): Boolean {
             val latest = settings.state.value
+            val activeId = camera.value.activeCameraId
+            if (activeId != null && activeId != latest.selectedCameraId) return false
             if (!latest.locationSync || camera.value.manuallyDisconnected || (latest.sonySelected && sonyStopped)) return false
-            return latest.sonySelected == selected.sonySelected && latest.selectedAddress == selected.selectedAddress
+            return latest.selectedCameraId == selected.selectedCameraId && latest.selectedAddress == selected.selectedAddress
         }
         if (!selectionCurrent()) return@withLock null
         val channel = if (selected.sonySelected) {
@@ -55,6 +57,13 @@ internal class CameraLocationRouter(
         check(target === channel && channel.isCurrent()) { "位置同步目标已变化" }
         check(fix.fresh(SystemClock.elapsedRealtimeNanos(), channel.maxAgeNanos)) { "定位已过期，等待新的位置" }
         channel.send(fix)
+    }
+
+    suspend fun finishSelection() = writes.withLock {
+        val current = target
+        target = null
+        current?.clear()
+        Unit
     }
 
     suspend fun clear(owner: Any) = writes.withLock {

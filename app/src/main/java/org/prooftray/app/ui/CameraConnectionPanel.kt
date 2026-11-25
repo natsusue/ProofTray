@@ -1,5 +1,6 @@
 package org.prooftray.app.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,6 +18,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -32,12 +34,17 @@ internal fun CameraStatusCard(state: LibraryUiState, actions: LibraryActions, on
         shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainer) {
         Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (camera.connected) Text("$name · 已连接", Modifier.weight(1f).padding(vertical = 8.dp),
-                    style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                else Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
-                    Text(name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(summary.title, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val canSelect = state.settings.cameras.isNotEmpty()
+                Column(Modifier.weight(1f).clickable(enabled = canSelect, onClickLabel = "查看我的相机") {
+                    onOpen(CameraPanel.DEVICES)
+                }.padding(vertical = 8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (camera.connected) "$name · 已连接" else name, Modifier.weight(1f, fill = false),
+                            style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (canSelect) AppIcon(AppGlyph.FORWARD, modifier = Modifier.rotate(90f))
+                    }
+                    if (!camera.connected) Text(summary.title, style = MaterialTheme.typography.bodySmall, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (camera.connected) {
                     if (!camera.readingCatalog) IconButton(onClick = actions.onRefreshCamera, enabled = !camera.busy && !camera.connecting) {

@@ -32,7 +32,7 @@ data class CameraState(
     val catalogDates: List<SonyCaptureDay> = emptyList(), val catalogStartDay: SonyCaptureDay? = null, val transmissionPaused: Boolean = false,
     val connecting: Boolean = false, val connectionPhase: ConnectionPhase = ConnectionPhase.IDLE, val bluetoothAssisted: Boolean = false,
     val make: CameraMake = CameraMake.OTHER, val protocolDiagnostic: String? = null, val manuallyDisconnected: Boolean = false,
-    val sonyControlConnected: Boolean = false, val pairingTarget: BleCamera? = null
+    val sonyControlConnected: Boolean = false, val pairingTarget: BleCamera? = null, val activeCameraId: String? = null
 ) {
     val canConnect: Boolean get() = !connecting
     val readingCatalog: Boolean get() = connected && !connecting && busy

@@ -48,7 +48,7 @@ internal interface AutomaticTransferHost {
     suspend fun photo(session: CameraBrowseSession, handle: Long): RemotePhoto?
     suspend fun enqueueOriginals(photos: List<RemotePhoto>)
     suspend fun receiveBluetooth(photo: RemotePhoto, bytes: () -> ByteArray)
-    suspend fun reconnectBluetooth(camera: BleCamera)
+    suspend fun reconnectBluetooth(camera: BleCamera, cameraId: String)
 }
 
 /** Bluetooth checks pending images once on connection, then waits for camera notifications instead of polling. */
@@ -126,7 +126,10 @@ internal class CameraAutomation(
                             }
                             else -> {
                                 val session = host.wifiSession()
-                                if (session == null) report(false, "原片自动导入等待 Wi-Fi 连接") else watchWifi(session, value)
+                                val activeId = host.camera.value.activeCameraId
+                                if (session == null) report(false, "原片自动导入等待 Wi-Fi 连接")
+                                else if (activeId != null && activeId != settings.state.value.selectedCameraId) report(false, "请先选择已连接的机身")
+                                else watchWifi(session, value)
                             }
                         }
                     } catch (cancelled: CancellationException) { throw cancelled }
@@ -134,6 +137,15 @@ internal class CameraAutomation(
                     finally { cancelAutomaticBluetooth() }
                 }
         }
+    }
+
+    @Synchronized
+    fun clearDeviceState() {
+        standbyFailures.set(0)
+        nextStandbyConnect.set(0)
+        transferRetry.reset()
+        backgroundState = AutoDownloadState()
+        mutableState.value = backgroundState
     }
 
     fun allowStandbyReconnect(allowed: Boolean) {
@@ -148,7 +160,11 @@ internal class CameraAutomation(
         settings.state.value.autoDownload && settings.state.value.autoKind == AutoDownloadKind.CAMERA_JPEG
 
     private suspend fun watchBluetoothStandby() {
-        val name = settings.state.value.controlName
+        val saved = settings.state.value
+        val target = saved.selectedCamera ?: return
+        val name = target.name
+        val others = saved.cameras.filter { it.make == CameraMake.NIKON && it.id != target.id }
+        val sameName = others.any { matchesCameraName(it.name, setOf(name)) }
         if (cameraBluetoothName(name).isBlank()) { report(false, "请先连接所选相机以记录名称"); return }
         if (host.ble.pairedDevices().none { it.address == settings.state.value.transferAddress }) {
             report(false, "系统配对已移除，请先手动配对相机")
@@ -160,12 +176,15 @@ internal class CameraAutomation(
             delay((nextStandbyConnect.get() - SystemClock.elapsedRealtime()).coerceAtLeast(0))
             delay(transferRetry.state().delayMillis(SystemClock.elapsedRealtime()))
             report(true, "BLE 已断开，低功耗等待所选相机的待传广播")
-            val camera = host.ble.awaitTransferAdvertisement(setOf(name))
+            val camera = host.ble.awaitTransferAdvertisement(setOf(name)) { candidate ->
+                candidate.address.equals(target.controlAddress, true) || ((!sameName || target.serial.isNotBlank()) &&
+                    others.none { it.controlAddress.equals(candidate.address, true) })
+            }
             if (host.ble.state.value.pairingInProgress || state.value.checking) return
             val failures = standbyFailures.incrementAndGet()
             nextStandbyConnect.set(SystemClock.elapsedRealtime() + settings.state.value.powerProfile.pollSeconds.coerceAtLeast(30) * 1000L)
             report(true, "相机有待传照片，正在恢复蓝牙连接（$failures/3）")
-            host.reconnectBluetooth(camera)
+            host.reconnectBluetooth(camera, target.id)
             currentCoroutineContext().ensureActive()
         }
         report(false, "待机重连连续失败，已停止尝试；请点击检查 / 重试")
@@ -191,10 +210,10 @@ internal class CameraAutomation(
         if (transferRetry.state().failures > 0) manualRetryFinished.trySend(Unit)
     }
 
-    suspend fun checkBluetoothOnce(): String {
+    suspend fun checkBluetoothOnce(expectedSource: String? = null): String {
         val saved = settings.state.value
         val policy = Policy(true, AutoDownloadKind.CAMERA_JPEG, saved.controlAddress, saved.transferAddress, saved.bluetoothRole)
-        return checkNotNull(transferBluetoothBatch(policy, manual = true, ::manualProgress))
+        return checkNotNull(transferBluetoothBatch(policy, manual = true, expectedSource = expectedSource, progress = ::manualProgress))
     }
 
     fun cancelActiveBluetooth() {
@@ -228,7 +247,7 @@ internal class CameraAutomation(
             delay(600) // Merge bursts and allow RAW/JPEG pairs to finish writing.
             currentCoroutineContext().ensureActive()
             if (host.camera.value.paused) { report(true, "自动导入已暂停"); continue }
-            val pendingTasks = host.camera.value.tasks.count { it.pending }
+            val pendingTasks = host.camera.value.tasks.count { it.pending && it.photo.cameraIdentity == session.sourceId }
             if (pendingTasks >= 100) { report(true, "已有 100 项待处理，等待队列腾出空间"); continue }
             val snapshot = host.handles(session)
             val candidates = tracker.observe(snapshot.handles, snapshot.revision)
@@ -311,7 +330,9 @@ internal class CameraAutomation(
         } finally { notifications.cancel(); manualFinished.cancel(); retryJob?.cancel(); triggers.close() }
     }
 
-    private suspend fun transferBluetoothBatch(policy: Policy, manual: Boolean, progress: (String) -> Unit): String? = bluetoothTransfers.withLock {
+    private suspend fun transferBluetoothBatch(
+        policy: Policy, manual: Boolean, expectedSource: String? = null, progress: (String) -> Unit
+    ): String? = bluetoothTransfers.withLock {
         currentCoroutineContext().ensureActive()
         if (!manual && state.value.checking) return@withLock null
         check(!wifiHasPriority(host.ble.state.value.wifiRequested, host.camera.value.connecting, host.camera.value.connected)) {
@@ -349,9 +370,10 @@ internal class CameraAutomation(
             val dataSerial = cameraSerial(connection.device.optString("serial"))
             val controlSerial = cameraSerial(control.serialNumber)
             check(cameraSerialMatches(dataSerial, controlSerial)) { "传图设备与 BLE 控制设备的机身序列号不同，请检查关联" }
-            connection.startAutomatic()
             val model = connection.device.optString("model")
             val source = dataSerial?.let { "$model:$it" } ?: "bluetooth:${policy.transfer}"
+            check(expectedSource == null || expectedSource == source) { "此任务属于另一台机身，请先切换到原相机再重试" }
+            connection.startAutomatic()
             val history = repository.importedKeys().toMutableSet()
             val selection = connection.pendingImages()
             val marked = selection.handles.toSet()
@@ -442,20 +464,26 @@ internal class CameraAutomation(
                     throw CancellationException("当前操作已结束蓝牙待机恢复")
                 }
                 val serial = cameraSerial(previous.serialNumber) ?: cameraSerial(saved.controlSerial)
-                host.ble.connect(address, preserveHistory = true, expectedSerial = serial).await()
+                val restored = host.ble.connect(address, preserveHistory = true, expectedSerial = serial).await()
+                if (address != policy.control && serial != null && cameraSerial(restored.serialNumber) == null) {
+                    host.ble.disconnect()
+                    error("机身地址已变化，未能确认蓝牙待机机身")
+                }
                 currentCoroutineContext().ensureActive()
                 if (address != policy.control) settings.update {
                     if (it.sonySelected || it.controlAddress != policy.control || it.transferAddress != policy.transfer) {
                         throw CancellationException("所选相机已变化")
                     }
-                    it.copy(controlAddress = address)
+                    val target = it.selectedCamera ?: throw CancellationException("所选相机已变化")
+                    it.withCamera(target.copy(controlAddress = address))
                 }
                 return
             } catch (error: Exception) {
                 currentCoroutineContext().ensureActive()
                 if (attempt != 0 || names.isEmpty() || !retryableBleFailure(error)) throw error
                 delay(1000)
-                address = host.ble.rediscover(names, address, cameraSerial(previous.serialNumber)).address
+                val id = settings.state.value.selectedCameraId
+                address = host.ble.rediscover(names, address, cameraSerial(previous.serialNumber), knownId = id).address
             }
         }
     }

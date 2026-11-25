@@ -53,8 +53,16 @@ internal fun rememberCameraAccess(model: LibraryViewModel): CameraAccess {
         val target = pairedWifiTarget ?: return
         pairedWifiTarget = null
         val camera = model.camera.state.value
-        if (settings.state.value.selectedAddress == target && camera.generation == pairedWifiGeneration &&
+        if (settings.state.value.selectedCameraId == target && camera.generation == pairedWifiGeneration &&
             !camera.connected && !camera.connecting) model.camera.wakeWifi()
+    }
+    fun forCurrentCamera(action: () -> Unit): () -> Unit {
+        val target = settings.state.value.selectedCameraId
+        val generation = model.camera.state.value.generation
+        return {
+            if (settings.state.value.selectedCameraId == target && model.camera.state.value.generation == generation) action()
+            else pairedWifiTarget = null
+        }
     }
     val wifiPanel = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val action = pendingWifiAction ?: if (pairedWifiTarget != null) ::connectRequestedCamera else null
@@ -80,7 +88,7 @@ internal fun rememberCameraAccess(model: LibraryViewModel): CameraAccess {
     }
     fun ensurePhoneWifi(action: () -> Unit) {
         if (phoneWifi?.isWifiEnabled == true) action()
-        else if (pendingWifiAction == null) { pendingWifiAction = action; showWifiPanel() }
+        else if (pendingWifiAction == null) { pendingWifiAction = forCurrentCamera(action); showWifiPanel() }
     }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         val action = pendingCameraAction
@@ -111,7 +119,7 @@ internal fun rememberCameraAccess(model: LibraryViewModel): CameraAccess {
             return
         }
         requiredPermissions = required.toTypedArray()
-        pendingCameraAction = action
+        pendingCameraAction = forCurrentCamera(action)
         val notifications = if (Build.VERSION.SDK_INT >= 33) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList()
         permissions.launch((required + notifications).toTypedArray())
     }
@@ -122,8 +130,8 @@ internal fun rememberCameraAccess(model: LibraryViewModel): CameraAccess {
         override fun withPhoneWifi(action: () -> Unit) = ensurePhoneWifi(action)
         override fun openWifiPanel() = showWifiPanel()
         override fun switchToCameraWifi() {
-            val target = settings.state.value.selectedAddress
-            if (target.isBlank() || pairedWifiTarget != null || pendingCameraAction != null || pendingWifiAction != null) return
+            val target = settings.state.value.selectedCameraId ?: return
+            if (pairedWifiTarget != null || pendingCameraAction != null || pendingWifiAction != null) return
             pairedWifiTarget = target
             pairedWifiGeneration = model.camera.state.value.generation
             requestPermissions(bluetooth = true, scanning = true, wifi = true) { ensurePhoneWifi(::connectRequestedCamera) }

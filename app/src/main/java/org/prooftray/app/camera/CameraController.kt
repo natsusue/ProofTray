@@ -28,6 +28,7 @@ import org.prooftray.app.data.AppSettingsRepository
 import org.prooftray.app.domain.DownloadVariant
 import org.prooftray.app.domain.AutoDownloadKind
 import org.prooftray.app.domain.SortOrder
+import org.prooftray.app.domain.SavedCamera
 
 /**
  * Facade over the camera stack. It owns the connection lifecycle (BLE control, camera Wi-Fi, PTP session) and hands
@@ -67,8 +68,10 @@ class CameraController private constructor(private val context: Context) {
     private var connectionJob: Job? = null
     private var wifiPreferenceJob: Job? = null
     private data class WifiPlan(val connection: CameraConnection, val expectedSerial: String? = null,
-                                val route: Network? = null, val sonyId: UUID? = null)
+                                val route: Network? = null, val sonyId: UUID? = null, val cameraId: String? = null)
     private var retryWifi: (() -> Unit)? = null
+    private var repairingCameraId: String? = null
+    @Volatile private var changingSelection = false
     private var manualBluetoothJob: Job? = null
     private var identity = ""
     private val browser = CameraCatalogBrowser(context, scope, requests, ::browseSession, ::catalogProgress) { changed.emit(Unit) }
@@ -108,17 +111,19 @@ class CameraController private constructor(private val context: Context) {
             downloads.enqueue(photos, DownloadVariant.ORIGINAL, automatic = true)
         }
         override suspend fun receiveBluetooth(photo: RemotePhoto, bytes: () -> ByteArray) = downloads.receiveBluetooth(photo, bytes)
-        override suspend fun reconnectBluetooth(camera: BleCamera) {
+        override suspend fun reconnectBluetooth(camera: BleCamera, cameraId: String) {
             currentCoroutineContext().ensureActive()
             val job = synchronized(this@CameraController) {
-                if (!automatic.canReconnectAutomatically() || !matchesCameraName(camera.name, setOf(settings.state.value.controlName))) {
+                val target = settings.state.value.selectedCamera
+                if (target == null || target.id != cameraId || !automatic.canReconnectAutomatically() ||
+                    !matchesCameraName(camera.name, setOf(target.name))) {
                     throw CancellationException("相机或连接意图已变化")
                 }
                 check(ble.pairedDevices().any { it.classic && it.address == settings.state.value.transferAddress }) {
                     "系统配对已移除，请在前台重新配对相机"
                 }
                 CameraService.start(context)
-                bluetoothPairing.connect(camera, initializePairing = false, allowSystemPairing = false)
+                bluetoothPairing.connect(camera, target, initializePairing = false)
             }
             job.join()
         }
@@ -147,6 +152,7 @@ class CameraController private constructor(private val context: Context) {
 
     @Synchronized
     fun connect(config: CameraConnection) {
+        if (changingSelection) return
         retryWifi = { connect(config) }
         val selected = settings.state.value
         if (selected.sonySelected && !config.sonyCamera) {
@@ -156,7 +162,9 @@ class CameraController private constructor(private val context: Context) {
 
     @Synchronized fun retryConnection() {
         val target = state.value.pairingTarget
-        if (target != null) connectBle(target) else retryWifi?.invoke()
+        if (target == null) retryWifi?.invoke()
+        else if (repairingCameraId != null && repairingCameraId == settings.state.value.selectedCameraId) repairSelectedCamera()
+        else connectBle(target)
     }
 
     private fun ensureGeneration(generation: Int) {
@@ -229,10 +237,22 @@ class CameraController private constructor(private val context: Context) {
                 browser.resetSession()
                 synchronized(this@CameraController) {
                     check(generation == connectionGeneration && session.connected) { "连接已取消或会话已结束" }
+                    val saved = settings.state.value
+                    val activeId = plan.cameraId ?: saved.cameras.singleOrNull {
+                        it.make == session.make && it.wifiSourceId == cameraIdentity && !cameraIdentity.startsWith("session:")
+                    }?.id
+                    if (activeId != null) {
+                        val expected = saved.cameras.firstOrNull { it.id == activeId }
+                        check(expected != null && expected.make == session.make && cameraSerialMatches(serial, cameraSerial(expected.serial))) {
+                            "Wi-Fi 相机与所选机身不一致，请核对后重试"
+                        }
+                        settings.markConnected(activeId, serial, cameraIdentity)
+                    }
                     identity = cameraIdentity
                     mutableState.update { it.copy(connected = true, connecting = false, busy = false, connectionPhase = ConnectionPhase.READY,
                         cameraName = device.optString("model"), make = session.make, stage = "已连接，可导入原片", sourceId = identity,
-                        generation = generation, indexed = 0, total = 0, hasMore = false, catalogIds = emptySet(), protocolDiagnostic = null) }
+                        activeCameraId = activeId, generation = generation, indexed = 0, total = 0, hasMore = false,
+                        catalogIds = emptySet(), protocolDiagnostic = null) }
                 }
                 Log.i("ProofTray.Camera", "connect stage=ready; model=${device.optString("model")}; firmware=${device.optString("version")}")
                 refresh()
@@ -258,6 +278,10 @@ class CameraController private constructor(private val context: Context) {
 
     @Synchronized
     fun disconnect() {
+        if (!changingSelection) disconnectNow()
+    }
+
+    private fun disconnectNow() {
         retryWifi = null
         releaseWifiPreference()
         disconnectWifi()
@@ -302,6 +326,7 @@ class CameraController private constructor(private val context: Context) {
 
     @Synchronized
     fun scanBle() {
+        if (changingSelection) return
         clearManualDisconnect()
         CameraService.start(context)
         automatic.cancelActiveBluetooth()
@@ -316,11 +341,48 @@ class CameraController private constructor(private val context: Context) {
 
     @Synchronized
     fun connectBle(camera: BleCamera) {
+        if (changingSelection) return
+        val saved = settings.state.value
+        val exact = saved.cameras.firstOrNull { it.make == camera.make &&
+            (if (camera.classic) it.transferAddress else it.controlAddress).equals(camera.address, true) }
+            ?: saved.selectedCamera?.takeIf { camera.classic && it.make == CameraMake.NIKON }
+        val registered = exact == null && camera.make == CameraMake.NIKON && !camera.classic && ble.registeredAdvertisement(camera)
+        val candidates = if (registered) saved.cameras.filter {
+            it.hasScanRegistration && it.make == camera.make && matchesCameraName(camera.name, setOf(it.name))
+        } else emptyList()
+        if (candidates.size > 1 || candidates.singleOrNull()?.serial?.isBlank() == true) {
+            mutableState.update { it.copy(message = "发现已登记的同名机身，请从「我的相机」选择目标并连接") }
+            return
+        }
+        val known = exact ?: candidates.singleOrNull()
+        if (known != null && known.hasScanRegistration && known.id != saved.selectedCameraId) {
+            selectCamera(known.id)
+            return
+        }
+        connectBle(camera, known, repair = false)
+    }
+
+    @Synchronized
+    fun repairSelectedCamera() {
+        val target = settings.state.value.selectedCamera ?: return
+        if (!canChangeCamera()) return
+        if (state.value.connected || state.value.connecting) {
+            mutableState.update { it.copy(message = "请先断开当前连接，再重新配对这台相机") }
+            return
+        }
+        if (target.controlAddress.isBlank()) {
+            mutableState.update { it.copy(message = "请先搜索并选择这台相机的蓝牙控制设备") }
+            return
+        }
+        connectBle(BleCamera(target.controlAddress, target.name, make = target.make), target, repair = true)
+    }
+
+    private fun connectBle(camera: BleCamera, known: SavedCamera?, repair: Boolean) {
         clearManualDisconnect()
         CameraService.start(context)
         disconnect()
         val generation = connectionGeneration
-        val saved = settings.state.value
+        repairingCameraId = known?.id.takeIf { repair }
         val pairingSony = camera.make == CameraMake.SONY
         mutableState.update { it.copy(connecting = true, busy = true, connectionPhase = ConnectionPhase.BLUETOOTH,
             pairingTarget = camera, stage = "正在准备蓝牙配对", message = null, protocolDiagnostic = null) }
@@ -328,17 +390,17 @@ class CameraController private constructor(private val context: Context) {
             try {
                 automatic.awaitBluetoothIdle()
                 val sonyModel = if (pairingSony) {
-                    sony.pair(camera, saved.sonyAddress.equals(camera.address, true)) { stage ->
+                    sony.pair(camera, restoreOnly = known != null && !repair) { stage ->
                         synchronized(this@CameraController) {
                             ensureGeneration(generation)
                             mutableState.update { it.copy(stage = stage) }
                         }
                     }
                 } else {
-                    val known = saved.transferAddress.isNotBlank() && camera.address.equals(saved.controlAddress, true)
                     val pairing = synchronized(this@CameraController) {
                         ensureGeneration(generation)
-                        bluetoothPairing.connect(camera, initializePairing = !known || camera.classic)
+                        val initialize = repair || known?.hasScanRegistration != true || camera.classic
+                        bluetoothPairing.connect(camera, known, rediscover = repair, initializePairing = initialize)
                     }
                     pairing.join()
                     val control = ble.state.value
@@ -350,7 +412,7 @@ class CameraController private constructor(private val context: Context) {
                     if (generation != connectionGeneration) return@launch
                     if (sonyModel != null) {
                         val name = camera.name.takeUnless { it.isBlank() || it == "Sony α" } ?: sonyModel
-                        settings.update { it.copy(sonySelected = true, sonyAddress = camera.address, sonyName = name) }
+                        settings.savePairedCamera(CameraMake.SONY, name, camera.address, knownId = known?.id)
                     } else automatic.allowStandbyReconnect(true)
                     location.sonyStopped = false
                     mutableState.update { it.copy(connecting = false, busy = false, connectionPhase = ConnectionPhase.IDLE,
@@ -375,6 +437,7 @@ class CameraController private constructor(private val context: Context) {
 
     @Synchronized
     fun discoverClassic() {
+        if (changingSelection) return
         if (settings.state.value.sonySelected) return
         clearManualDisconnect()
         automatic.allowStandbyReconnect(true)
@@ -385,11 +448,13 @@ class CameraController private constructor(private val context: Context) {
         }
         CameraService.start(context)
         releaseStaleWifiPreference()
-        bluetoothPairing.connect(BleCamera(saved.controlAddress, saved.controlName), rediscover = true, initializePairing = true)
+        val known = saved.selectedCamera ?: return
+        bluetoothPairing.connect(BleCamera(saved.controlAddress, saved.controlName), known, rediscover = true, initializePairing = true)
     }
 
     @Synchronized
     fun wakeWifi() {
+        if (changingSelection) return
         retryWifi = { wakeWifi() }
         val selected = settings.state.value
         if (selected.sonySelected) {
@@ -403,11 +468,11 @@ class CameraController private constructor(private val context: Context) {
                 if (lan != null) {
                     progress(ConnectionPhase.BLUETOOTH, "正在读取索尼机身的访问认证状态")
                     val config = sony.connection(selected.sonyAddress, CameraConnection(mode = CameraMode.STA, host = lan.second))
-                    return@startWifiConnection WifiPlan(config, route = lan.first, sonyId = id)
+                    return@startWifiConnection WifiPlan(config, route = lan.first, sonyId = id, cameraId = selected.selectedCameraId)
                 }
                 progress(ConnectionPhase.CAMERA_WIFI, "正在通过蓝牙开启索尼 Wi-Fi")
                 val config = sony.connection(selected.sonyAddress)
-                WifiPlan(config.copy(security = CameraWifiSecurity.WPA2), sonyId = id)
+                WifiPlan(config.copy(security = CameraWifiSecurity.WPA2), sonyId = id, cameraId = selected.selectedCameraId)
             }
             return
         }
@@ -425,7 +490,8 @@ class CameraController private constructor(private val context: Context) {
                 ble.disconnectForHandoff(control.connectedAddress)
                 ble.connectionMessage("正在切换到相机 Wi-Fi")
             }
-            WifiPlan(CameraConnection(ssid = wifi.ssid, password = wifi.password, security = wifi.security), serial)
+            val config = CameraConnection(ssid = wifi.ssid, password = wifi.password, security = wifi.security)
+            WifiPlan(config, serial, cameraId = selected.selectedCameraId)
         }
     }
 
@@ -437,7 +503,13 @@ class CameraController private constructor(private val context: Context) {
         val current = ble.state.value
         if (!current.dataReady || current.connectedAddress != saved.controlAddress) {
             reconnecting()
-            bluetoothPairing.connect(BleCamera(saved.controlAddress, saved.controlName), rediscover = true, initializePairing = false).join()
+            val caller = currentCoroutineContext()
+            synchronized(this) {
+                caller.ensureActive()
+                check(settings.state.value.selectedCameraId == saved.selectedCameraId) { "所选相机已更换" }
+                bluetoothPairing.connect(BleCamera(saved.controlAddress, saved.controlName), saved.selectedCamera,
+                    rediscover = true, initializePairing = false)
+            }.join()
         }
         currentCoroutineContext().ensureActive()
         val control = ble.state.value
@@ -445,10 +517,66 @@ class CameraController private constructor(private val context: Context) {
         return control
     }
 
+    @Synchronized
+    fun selectCamera(id: String) {
+        val saved = settings.state.value
+        if (saved.cameras.none { it.id == id }) return
+        val current = state.value
+        if (saved.selectedCameraId == id && current.pairingTarget == null && (!current.connected || current.activeCameraId == id)) return
+        changeSelection { settings.selectCamera(id) }
+    }
+
+    @Synchronized
+    fun removeCamera(id: String) {
+        val saved = settings.state.value
+        if (saved.cameras.none { it.id == id } || changingSelection) return
+        if (saved.selectedCameraId == id || state.value.activeCameraId == id) changeSelection { settings.removeCamera(id) }
+        else if (state.value.pairingTarget == null && !bleState.value.pairingInProgress) settings.removeCamera(id)
+        else mutableState.update { it.copy(message = "请等待当前蓝牙操作结束后再移除设备") }
+    }
+
+    private fun canChangeCamera(): Boolean {
+        if (changingSelection || state.value.connectionPhase == ConnectionPhase.DISCONNECTING) return false
+        if (autoState.value.transferring || state.value.tasks.any { it.status == DownloadStatus.RUNNING }) {
+            mutableState.update { it.copy(message = "请先完成或停止当前传图") }
+            return false
+        }
+        return true
+    }
+
+    private fun changeSelection(change: () -> Unit) {
+        if (!canChangeCamera()) return
+        changingSelection = true
+        endConnection(all = true) {
+            mutableState.update { it.copy(connecting = true, busy = true, connectionPhase = ConnectionPhase.DISCONNECTING, stage = "正在切换相机") }
+            scope.launch {
+                try {
+                    manualBluetoothJob?.join()
+                    bluetoothPairing.awaitCurrent()
+                    automatic.awaitBluetoothIdle()
+                    runCatching { location.finishSelection() }
+                    synchronized(this@CameraController) {
+                        sony.close()
+                        ble.clearDeviceState()
+                        automatic.clearDeviceState()
+                        repairingCameraId = null
+                        change()
+                    }
+                } finally {
+                    synchronized(this@CameraController) {
+                        changingSelection = false
+                        val selected = settings.state.value.selectedCameraId != null
+                        mutableState.update { it.disconnected(connectionGeneration).copy(cameraName = "", manuallyDisconnected = selected) }
+                    }
+                }
+            }
+        }
+    }
+
     fun disconnectWifiSession() = endConnection(all = false)
     fun disconnectByUser() = endConnection(all = true)
 
-    @Synchronized private fun endConnection(all: Boolean) {
+    @Synchronized private fun endConnection(all: Boolean, afterDisconnect: (() -> Unit)? = null) {
         if (state.value.connectionPhase == ConnectionPhase.DISCONNECTING) return
         if (all) {
             retryWifi = null
@@ -457,8 +585,9 @@ class CameraController private constructor(private val context: Context) {
         }
         fun finish() {
             if (all) {
-                disconnect()
+                disconnectNow()
                 mutableState.update { it.copy(stage = "相机已断开", manuallyDisconnected = true) }
+                afterDisconnect?.invoke()
             } else {
                 disconnectWifi()
                 releaseWifiPreference()
@@ -534,8 +663,16 @@ class CameraController private constructor(private val context: Context) {
     }
 
     @Synchronized
-    fun checkBluetoothTransfers() {
-        if (settings.state.value.sonySelected) return
+    fun checkBluetoothTransfers(expectedSource: String? = null) {
+        if (changingSelection) return
+        val saved = settings.state.value
+        val sourceAddress = expectedSource?.takeIf { it.startsWith("bluetooth:") }?.removePrefix("bluetooth:")
+        val anotherSource = expectedSource != null && saved.cameras.any { it.id != saved.selectedCameraId && it.wifiSourceId == expectedSource }
+        if (saved.sonySelected || saved.controlAddress.isBlank() || anotherSource ||
+            (sourceAddress != null && !sourceAddress.equals(saved.transferAddress, true))) {
+            if (expectedSource != null) mutableState.update { it.copy(message = "请先选择此任务原来的尼康机身") }
+            return
+        }
         if (!automatic.beginManualCheck()) return
         clearManualDisconnect()
         manualBluetoothJob = scope.launch {
@@ -549,7 +686,7 @@ class CameraController private constructor(private val context: Context) {
                 automatic.manualProgress("正在检查已关联相机的控制连接")
                 awaitSavedControl("请先在设备设置中选择相机的 BLE 控制设备") { automatic.manualProgress("正在重新发现并连接已关联相机") }
                 automatic.manualProgress("正在等待蓝牙通道并检查待传照片")
-                result = automatic.checkBluetoothOnce()
+                result = automatic.checkBluetoothOnce(expectedSource)
             } catch (stop: CancellationException) { throw stop }
             catch (error: Exception) {
                 Log.w("ProofTray.Bluetooth", "manual transfer check failed", error)
@@ -560,6 +697,7 @@ class CameraController private constructor(private val context: Context) {
 
     @Synchronized
     fun switchToNikonBluetooth() {
+        if (changingSelection) return
         val saved = settings.state.value
         if (saved.sonySelected || saved.controlAddress.isBlank()) return
         val retry = state.value.connectionPhase == ConnectionPhase.FAILED
@@ -576,6 +714,7 @@ class CameraController private constructor(private val context: Context) {
 
     @Synchronized
     fun connectSavedControl() {
+        if (changingSelection) return
         if (settings.state.value.sonySelected) return
         clearManualDisconnect()
         val address = settings.state.value.controlAddress
@@ -583,37 +722,51 @@ class CameraController private constructor(private val context: Context) {
         CameraService.start(context)
         automatic.allowStandbyReconnect(true)
         releaseStaleWifiPreference()
-        bluetoothPairing.connect(BleCamera(address, settings.state.value.controlName), rediscover = true, initializePairing = false)
+        val target = settings.state.value.selectedCamera ?: return
+        bluetoothPairing.connect(BleCamera(address, target.name), target, rediscover = true, initializePairing = false)
     }
 
+    @Synchronized
     fun resumeAutomaticDownloads() {
+        if (changingSelection) return
         clearManualDisconnect()
         CameraService.start(context)
         automatic.allowStandbyReconnect(true)
     }
 
+    @Synchronized
     fun resumeLocationSync() {
+        if (changingSelection) return
         location.sonyStopped = false
         clearManualDisconnect()
     }
 
-    fun beginRegistration() {
-        scope.launch {
-            try {
-                val code = requests.withLock { active().registrationCode() }
-                mutableState.update { it.copy(pairingCode = code, message = "请核对机身上的配对码，并在机身确认主机") }
-            } catch (error: Exception) { mutableState.update { it.copy(message = error.message) } }
-        }
-    }
+    fun beginRegistration() = registerPhone(confirm = false)
 
     fun confirmRegistration() {
-        if (state.value.pairingCode == null) return
+        if (state.value.pairingCode != null) registerPhone(confirm = true)
+    }
+
+    @Synchronized
+    private fun registerPhone(confirm: Boolean) {
+        val session = browseSession() ?: return
+        if (changingSelection) return
         scope.launch {
             try {
-                requests.withLock { active().confirmRegistration() }
-                mutableState.update { it.copy(pairingCode = null, message = "相机已确认主机登记，身份会在后续连接中复用") }
-                refresh()
-            } catch (error: Exception) { mutableState.update { it.copy(message = error.message) } }
+                val code = requests.withLock {
+                    ensureGeneration(session.generation)
+                    if (confirm) { session.link.confirmRegistration(); null } else session.link.registrationCode()
+                }
+                synchronized(this@CameraController) {
+                    ensureGeneration(session.generation)
+                    val message = if (confirm) "相机已确认主机登记，身份会在后续连接中复用" else "请核对机身上的配对码，并在机身确认主机"
+                    mutableState.update { it.copy(pairingCode = code, message = message) }
+                    if (confirm) refresh()
+                }
+            } catch (stop: CancellationException) { throw stop }
+            catch (error: Exception) {
+                mutableState.update { if (it.generation == session.generation) it.copy(message = error.message) else it }
+            }
         }
     }
 
