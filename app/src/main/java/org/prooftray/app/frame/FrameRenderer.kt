@@ -61,9 +61,8 @@ internal class FrameRenderSession(private val source: Bitmap, private val reposi
         val needed = snapshot.template.imageIds() + listOfNotNull(snapshot.logoId)
         pictures.keys.filterNot { it in needed }.forEach { pictures.remove(it)?.recycle() }
         val design = snapshot.template.forPhoto(source.width, source.height)
-        val output = FrameMemoryBudget.output(source.width, source.height, design, maxEdge)
-        FrameMemoryBudget.check(output, design = design)
         val plan = prepare(snapshot, design)
+        val output = plan.geometry.outputSize(maxEdge)
         val bitmap = Bitmap.createBitmap(output.width, output.height, Bitmap.Config.ARGB_8888, !opaque,
             ColorSpace.get(ColorSpace.Named.SRGB)).apply { density = Bitmap.DENSITY_NONE }
         try {

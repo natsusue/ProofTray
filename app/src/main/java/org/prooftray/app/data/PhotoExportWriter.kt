@@ -4,8 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.PorterDuff
 import android.net.Uri
-import android.os.Build
 import androidx.exifinterface.media.ExifInterface
 import java.io.OutputStream
 import org.prooftray.app.R
@@ -17,7 +17,6 @@ import org.prooftray.app.domain.MediaFormat
 import org.prooftray.app.domain.supportsRendering
 import org.prooftray.app.domain.validateLogExport
 import org.prooftray.app.frame.FrameCodec
-import org.prooftray.app.frame.FrameMemoryBudget
 import org.prooftray.app.frame.FrameRenderSession
 import org.prooftray.app.frame.FrameRepository
 import org.prooftray.app.frame.withFrameInitialization
@@ -125,54 +124,37 @@ internal class PhotoExportWriter(context: Context) {
         require(task.options.format in setOf(ExportFormat.JPEG, ExportFormat.PNG) && task.options.log == null) { "请选择成片导出格式" }
         work.ensureActive()
         val frame = task.options.frame
-        if (frame != null && task.asset.width != null && task.asset.height != null) {
-            val w = checkNotNull(task.asset.width); val h = checkNotNull(task.asset.height)
-            if (w > 0 && h > 0) {
-                val ratio = if (task.options.maxEdge > 0) minOf(1.0, task.options.maxEdge.toDouble() / maxOf(w, h)) else 1.0
-                val decodeW = maxOf(1, (w * ratio).toInt()); val decodeH = maxOf(1, (h * ratio).toInt())
-                val design = frame.template.forPhoto(w, h)
-                val size = FrameMemoryBudget.output(decodeW, decodeH, design, task.options.maxEdge)
-                FrameMemoryBudget.check(size, decodeW.toLong() * decodeH, design)
-            }
-        }
+        val jpeg = task.options.format == ExportFormat.JPEG
         work.phase = "解码源图片"
         work.report(null, "正在解码图片")
         val look = task.options.look?.takeUnless { it.isIdentity }
-        val decoded = if (look != null && look.usesLog) {
+        var bitmap = if (look != null && look.usesLog) {
             work.phase = "线性 RAW 显影与 Log 调色"
             LogRenderer.export(appContext, task.asset, task.options.maxEdge, colors.canonical(checkNotNull(look.lutId)), look)
-        } else PhotoRenderer.decode(appContext, task.asset, task.options.maxEdge, mutable = look != null, rawLook = look ?: ColorLookSettings())
-        var flattened: Bitmap? = null
-        var graded: Bitmap? = null
-        var framed: Bitmap? = null
-        try {
+        } else {
+            PhotoRenderer.decode(appContext, task.asset, task.options.maxEdge, mutable = look != null || (jpeg && frame == null),
+                rawLook = look ?: ColorLookSettings())
+        }
+        val (width, height) = try {
             work.ensureActive()
-            val processed = if (look != null && !look.usesLog && task.asset.format != MediaFormat.RAW) {
-                val mutable = if (decoded.config == Bitmap.Config.ARGB_8888 && decoded.isMutable) decoded
-                    else decoded.copy(Bitmap.Config.ARGB_8888, true)?.also { graded = it } ?: error("无法创建调色位图")
-                if (Build.VERSION.SDK_INT >= 34) mutable.setGainmap(null)
+            if (look != null && !look.usesLog && task.asset.format != MediaFormat.RAW) {
                 work.phase = "应用预设与 LUT"
                 work.report(0.35f, "正在应用 ${look.name}")
-                colors.apply(mutable, look)
+                colors.apply(bitmap, look)
                 work.ensureActive()
-                mutable
-            } else decoded
-            val composed = if (frame == null) processed else {
+            }
+            if (frame != null) {
                 work.phase = "绘制边框与参数"
                 work.report(0.45f, "正在绘制边框")
-                FrameRenderSession(processed, FrameRepository(appContext)).use { renderer ->
-                    renderer.render(frame, task.options.maxEdge, opaque = task.options.format == ExportFormat.JPEG,
-                        cancelled = work::ensureActive).bitmap.also { framed = it }
+                val framed = FrameRenderSession(bitmap, FrameRepository(appContext)).use { renderer ->
+                    renderer.render(frame, task.options.maxEdge, opaque = jpeg, cancelled = work::ensureActive).bitmap
                 }
+                bitmap.recycle()
+                bitmap = framed
+            } else if (jpeg && bitmap.hasAlpha()) {
+                Canvas(bitmap).drawColor(Color.WHITE, PorterDuff.Mode.DST_OVER)
+                bitmap.setHasAlpha(false)
             }
-            val bitmap = if (task.options.format == ExportFormat.JPEG && composed.hasAlpha()) {
-                Bitmap.createBitmap(composed.width, composed.height, Bitmap.Config.ARGB_8888).also {
-                    flattened = it
-                    val canvas = Canvas(it)
-                    canvas.drawColor(Color.WHITE)
-                    canvas.drawBitmap(composed, 0f, 0f, null)
-                }
-            } else composed
             work.report(0.5f, "正在编码并写入图片")
             work.phase = "打开目标文件"
             resolver.openOutputStream(output, "w")?.use { stream ->
@@ -184,24 +166,22 @@ internal class PhotoExportWriter(context: Context) {
                     }
                     override fun flush() = stream.flush()
                 }
-                val format = if (task.options.format == ExportFormat.JPEG) Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG
+                val format = if (jpeg) Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG
                 work.phase = "编码并写入图片"
                 check(bitmap.compress(format, task.options.jpegQuality, cancellable)) { "图片编码失败" }
                 work.phase = "完成保存"
                 stream.flush()
             } ?: error("无法打开目标文件")
-            work.ensureActive()
-            work.phase = "保存基础 EXIF"
-            work.report(0.99f, "正在保存 EXIF 并完成导出")
-            val preserved = preserveExif(Uri.parse(task.asset.uri), output, bitmap.width, bitmap.height)
-            return "已导出 ${bitmap.width} × ${bitmap.height}，sRGB" + (look?.let { " · ${it.name}" } ?: "") +
-                (frame?.let { " · " + it.template.name } ?: "") + if (preserved) "；已保留基础 EXIF" else "；未能保留 EXIF"
+            bitmap.width to bitmap.height
         } finally {
-            flattened?.recycle()
-            framed?.recycle()
-            graded?.recycle()
-            decoded.recycle()
+            bitmap.recycle()
         }
+        work.ensureActive()
+        work.phase = "保存基础 EXIF"
+        work.report(0.99f, "正在保存 EXIF 并完成导出")
+        val preserved = preserveExif(Uri.parse(task.asset.uri), output, width, height)
+        return "已导出 $width × $height，sRGB" + (look?.let { " · ${it.name}" } ?: "") +
+            (frame?.let { " · " + it.template.name } ?: "") + if (preserved) "；已保留基础 EXIF" else "；未能保留 EXIF"
     }
 
     private fun preserveExif(source: Uri, output: Uri, width: Int, height: Int): Boolean {

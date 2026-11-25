@@ -4,6 +4,7 @@ import kotlin.math.cos
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import org.prooftray.app.domain.flatten
 import org.prooftray.app.domain.FrameAlign
@@ -15,9 +16,11 @@ import org.prooftray.app.domain.FrameLayer
 import org.prooftray.app.domain.FrameLayerKind
 import org.prooftray.app.domain.FrameRegion
 import org.prooftray.app.domain.FrameTemplate
+import org.prooftray.app.domain.MAX_ARGB_8888_PIXELS
 
 internal const val FRAME_UNIT = 1000f
 internal data class FrameSize(val width: Float, val height: Float)
+internal data class FrameOutputSize(val width: Int, val height: Int)
 internal data class FrameRect(val left: Float, val top: Float, val width: Float, val height: Float) {
     val right: Float get() = left + width
     val bottom: Float get() = top + height
@@ -47,7 +50,20 @@ internal data class FrameMatrix(
     }
 }
 
-internal data class FrameGeometry(val canvas: FrameRect, val photo: FrameRect) {
+internal data class FrameGeometry(private val photoShortEdge: Int, val canvas: FrameRect, val photo: FrameRect) {
+    fun outputSize(maxEdge: Int): FrameOutputSize {
+        val sourceScale = photoShortEdge / FRAME_UNIT
+        val fullWidth = canvas.width * sourceScale
+        val fullHeight = canvas.height * sourceScale
+        val scale = if (maxEdge > 0) min(1f, maxEdge / max(fullWidth, fullHeight)) else 1f
+        val width = max(1, (fullWidth * scale).roundToInt())
+        val height = max(1, (fullHeight * scale).roundToInt())
+        require(width <= 32768 && height <= 32768 && width.toLong() * height <= MAX_ARGB_8888_PIXELS) {
+            "含边框的尺寸过大，请减小导出长边"
+        }
+        return FrameOutputSize(width, height)
+    }
+
     fun region(region: FrameRegion): FrameRect = when (region) {
         FrameRegion.CANVAS -> canvas
         FrameRegion.PHOTO -> photo
@@ -60,7 +76,8 @@ internal data class FrameGeometry(val canvas: FrameRect, val photo: FrameRect) {
     companion object {
         fun create(width: Int, height: Int, design: FrameDesign): FrameGeometry {
             require(width > 0 && height > 0) { "照片尺寸无效" }
-            val unit = FRAME_UNIT / min(width, height)
+            val shortEdge = min(width, height)
+            val unit = FRAME_UNIT / shortEdge
             val w = width * unit; val h = height * unit
             val p = design.canvas.insets
             val baseW = w + (p.left + p.right) * FRAME_UNIT
@@ -69,7 +86,7 @@ internal data class FrameGeometry(val canvas: FrameRect, val photo: FrameRect) {
             val canvasW = if (ratio == null) baseW else max(baseW, baseH * ratio)
             val canvasH = if (ratio == null) baseH else max(baseH, baseW / ratio)
             val photoW = w * design.photo.scale; val photoH = h * design.photo.scale
-            return FrameGeometry(FrameRect(0f, 0f, canvasW, canvasH), FrameRect(
+            return FrameGeometry(shortEdge, FrameRect(0f, 0f, canvasW, canvasH), FrameRect(
                 (canvasW - baseW + w - photoW) / 2 + (p.left + design.photo.x) * FRAME_UNIT,
                 (canvasH - baseH + h - photoH) / 2 + (p.top + design.photo.y) * FRAME_UNIT, photoW, photoH))
         }

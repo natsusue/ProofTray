@@ -10,7 +10,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.prooftray.app.domain.FrameTemplate
-import org.prooftray.app.frame.FrameMemoryBudget
 import org.prooftray.app.frame.FrameRendered
 import org.prooftray.app.frame.FrameRenderSession
 import org.prooftray.app.frame.FrameRepository
@@ -35,13 +34,9 @@ internal fun rememberFramePreview(request: FramePreviewRequest, repository: Fram
     }
     return rememberEditResult(FramePreviewResult(), session, request, enabled) {
         if (!enabled || session == null || lease == null) return@rememberEditResult FramePreviewResult()
-        val width = lease.bitmap.width
-        val height = lease.bitmap.height
         delay(35)
         renderOrMessage("边框预览内存不足", "无法绘制边框", { FramePreviewResult(error = it) }) {
             withContext(editRenderDispatcher) {
-                val design = request.template.forPhoto(width, height)
-                FrameMemoryBudget.check(FrameMemoryBudget.output(width, height, design, PREVIEW_EDGE), width.toLong() * height, design)
                 val snapshot = repository.snapshot(request.template, request.metadata)
                 val rendered = session.render(snapshot, PREVIEW_EDGE, cancelled = { coroutineContext.ensureActive() })
                 FramePreviewResult(request, rendered, own(rendered.bitmap))

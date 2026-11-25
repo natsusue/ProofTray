@@ -84,8 +84,11 @@ class FrameTemplateTest {
 
     @Test fun finalSizeIncludesFrameAndFixedAspectKeepsTheWholePhoto() {
         val design = FrameDesign(FrameCanvas(FrameInsets(0.03f, 0.03f, 0.12f, 0.03f)))
-        assertEquals(FrameOutputSize(6240, 4600), FrameMemoryBudget.output(6000, 4000, design, 0))
-        assertEquals(4096, FrameMemoryBudget.output(6000, 4000, design, 4096).width)
+        val geometry = FrameGeometry.create(6000, 4000, design)
+        assertEquals(FrameOutputSize(6240, 4600), geometry.outputSize(0))
+        assertEquals(4096, geometry.outputSize(4096).width)
+        val large = FrameGeometry.create(9000, 6000, design)
+        assertEquals(FrameOutputSize(9360, 6900), large.outputSize(0))
         val square = FrameGeometry.create(4000, 6000, design.copy(canvas = design.canvas.copy(aspect = FrameAspect.SQUARE)))
         assertEquals(square.canvas.width, square.canvas.height, 0f)
         assertEquals(2f / 3, square.photo.width / square.photo.height, 0.0001f)

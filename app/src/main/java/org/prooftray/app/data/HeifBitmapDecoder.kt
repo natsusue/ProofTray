@@ -14,6 +14,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.prooftray.app.domain.MAX_ARGB_8888_PIXELS
 import org.prooftray.app.domain.PreviewDimensions
 
 internal object NativeHeif {
@@ -49,7 +50,8 @@ internal object HeifBitmapDecoder {
         read()?.let { PreviewImageInfo(PreviewDimensions(it[0], it[1]), "image/heif") }
     } catch (_: LinkageError) { null }
 
-    suspend fun decode(context: Context, uri: Uri, maxEdge: Int, budget: Long, allowThumbnail: Boolean, platform: () -> Bitmap): Bitmap {
+    suspend fun decode(context: Context, uri: Uri, maxEdge: Int, maxPixels: Long = MAX_ARGB_8888_PIXELS,
+        allowThumbnail: Boolean, platform: () -> Bitmap): Bitmap {
         val platformError = try {
             return platform()
         } catch (error: IOException) { error }
@@ -59,7 +61,7 @@ internal object HeifBitmapDecoder {
                 coroutine.ensureActive()
                 withSeekablePhotoFile(context, uri) { fd ->
                     val source = NativeHeif.probeFile(fd) ?: throw IOException("无法读取 HEIF 主图尺寸")
-                    val size = renderDimensions(source[0], source[1], maxEdge, budget)
+                    val size = renderDimensions(source[0], source[1], maxEdge, maxPixels)
                     val bitmap = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
                     try {
                         NativeHeif.decodeFile(fd, bitmap, allowThumbnail)
@@ -80,10 +82,10 @@ internal object HeifBitmapDecoder {
     }
 }
 
-internal fun renderDimensions(width: Int, height: Int, maxEdge: Int, pixelBudget: Long): PreviewDimensions {
+internal fun renderDimensions(width: Int, height: Int, maxEdge: Int, maxPixels: Long = MAX_ARGB_8888_PIXELS): PreviewDimensions {
     require(width > 0 && height > 0) { "图片尺寸无效" }
     val ratio = if (maxEdge > 0) minOf(1.0, maxEdge.toDouble() / maxOf(width, height)) else 1.0
     val size = PreviewDimensions((width * ratio).roundToInt().coerceAtLeast(1), (height * ratio).roundToInt().coerceAtLeast(1))
-    require(size.pixels <= pixelBudget) { "此尺寸超过内存上限，请选择更小的输出长边" }
+    require(size.pixels <= maxPixels) { "位图尺寸过大，请选择较小的输出长边" }
     return size
 }
