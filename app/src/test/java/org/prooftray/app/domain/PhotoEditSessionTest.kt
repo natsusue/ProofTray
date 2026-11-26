@@ -37,7 +37,7 @@ class PhotoEditSessionTest {
         }
     }
     @Test fun closingCanonicalizesIdentityAndClearsANullFrame() {
-        val identity = look.copy(strength = 0f, renderVersion = 1)
+        val identity = ColorLookSettings(lutId = "a".repeat(64), strength = 0f)
         assertEquals(PhotoEditSession(null, frame), photoEditSession(identity, frame))
         assertEquals(PhotoEditSession(look, null), photoEditSession(look, null))
         assertEquals(PhotoEditSession(look, frame), photoEditSession(look, frame))

@@ -81,10 +81,9 @@ float Tone(float x, const RawDisplayTransform& transform) {
 }
 }  // namespace
 
-RawDisplayTransform PrepareRawDefault(const RawRenderSettings& settings, float exposure_ev) {
-  if (!std::isfinite(settings.baseline_exposure_ev) || std::abs(settings.baseline_exposure_ev) > 16 ||
-      !std::isfinite(exposure_ev) || std::abs(exposure_ev) > 3) throw std::invalid_argument("Invalid RAW display exposure");
-  const float exposure = settings.baseline_exposure_ev + exposure_ev;
+RawDisplayTransform PrepareRawDefault(const RawRenderSettings& settings) {
+  const float exposure = settings.baseline_exposure_ev;
+  if (!std::isfinite(exposure) || std::abs(exposure) > 16) throw std::invalid_argument("Invalid RAW display exposure");
   const float white = std::exp2(-std::max(exposure, 0.f));
   // SDK defaults: Shadows=5, ShadowScale=1. No profile DefaultBlackRender override or baked Stage3 exposure is present.
   const float black = std::min(.005f, .99f * white);
@@ -113,37 +112,16 @@ Rgb RenderRawDefault(const Rgb& input, const RawDisplayTransform& transform) {
 
 RawDisplayGrade PrepareRawDisplayGrade(const RawRenderSettings& settings, const ColorLook& look) {
   ValidateLook(look);
-  auto display = look;
-  if (look.render_version == 2) {
-    display.exposure_ev = display.warmth = display.tint = display.contrast = 0;
-    display.saturation = 1;
-    display.adjustments = {};
-    const auto base = PrepareRawDefault(settings);
-    const float exposure = std::exp2(look.exposure_ev);
-    return {base, base, {exposure * std::exp2(look.warmth * .25f), exposure * std::exp2(-look.tint * .25f),
-                         exposure * std::exp2(-look.warmth * .25f)}, display, look.strength, DisplayAdjustmentsTable(look), true};
-  }
-  display.strength = 1;
-  display.exposure_ev = display.warmth = 0;
-  return {PrepareRawDefault(settings), PrepareRawDefault(settings, look.exposure_ev),
-          {std::exp2(look.warmth * .25f), 1.f, std::exp2(-look.warmth * .25f)}, display, look.strength};
+  const float exposure = std::exp2(look.exposure_ev);
+  const Rgb gain{exposure * std::exp2(look.warmth * .25f), exposure * std::exp2(-look.tint * .25f), exposure * std::exp2(-look.warmth * .25f)};
+  return {PrepareRawDefault(settings), gain, look.strength, look.input_encoding, look.output_encoding, DisplayAdjustmentsTable(look)};
 }
 
 Rgb RenderRawDisplayPixel(const Rgb& linear, const ColorLut* lut, const RawDisplayGrade& grade) {
-  if (grade.modern) {
-    auto input = linear;
-    for (int c = 0; c < 3; ++c) input[c] *= grade.warmth_gain[c];
-    const auto display = ApplyDisplayLut(RenderRawDefault(input, grade.adjusted), grade.display_look, lut);
-    return grade.display_edits ? SampleLut(*grade.display_edits, display) : display;
-  }
-  if (grade.strength == 0) return RenderRawDefault(linear, grade.base);
-  auto adjusted = linear;
-  for (size_t i = 0; i < adjusted.size(); ++i) adjusted[i] *= grade.warmth_gain[i];
-  adjusted = ApplyColorLook(RenderRawDefault(adjusted, grade.adjusted), grade.display_look, lut);
-  if (grade.strength == 1) return adjusted;
-  auto base = RenderRawDefault(linear, grade.base);
-  for (size_t i = 0; i < base.size(); ++i) base[i] = std::lerp(base[i], adjusted[i], grade.strength);
-  return base;
+  auto input = linear;
+  for (int c = 0; c < 3; ++c) input[c] *= grade.gain[c];
+  const auto display = ApplyDisplayLut(RenderRawDefault(input, grade.transform), lut, grade.lut_strength, grade.lut_input, grade.lut_output);
+  return grade.display_edits ? SampleLut(*grade.display_edits, display) : display;
 }
 
 }  // namespace prooftray

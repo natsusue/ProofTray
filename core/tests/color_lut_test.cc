@@ -112,9 +112,11 @@ void PixelAndLook() {
   const auto original = image;
   prooftray::ApplyColorLookRgba(image, 2, 1, 12, true, {}, &identity);
   Check(image == original, "Identity LUT must preserve pixels, alpha and padding");
-  prooftray::ColorLook disabled{0, 3, 1, 0, -1};
-  prooftray::ApplyColorLookRgba(image, 2, 1, 12, true, disabled, &identity);
-  Check(image == original, "Zero strength must preserve every byte");
+  const auto inverse = prooftray::ParseCube("LUT_1D_SIZE 2\n1 1 1\n0 0 0\n");
+  prooftray::ColorLook disabled;
+  disabled.strength = 0;
+  prooftray::ApplyColorLookRgba(image, 2, 1, 12, true, disabled, &inverse);
+  Check(image == original, "Disabling the LUT must preserve unedited pixels");
   prooftray::ColorLook gray;
   gray.saturation = 0;
   prooftray::ApplyColorLookRgba(image, 2, 1, 12, true, gray, nullptr);
@@ -165,7 +167,6 @@ void PreviewHistogramSampling() {
 void PreviewHistogramAtTwoStops() {
   const std::array<uint8_t, 8> black_white{0, 0, 0, 255, 255, 255, 255, 255};
   prooftray::ColorLook look;
-  look.render_version = 2;
   look.exposure_ev = 2;
   const auto table = prooftray::BakeColorLook(look, nullptr);
   const auto curve_input = prooftray::PreviewHistogramRgba(black_white, 2, 1, 8, true, &look, nullptr, {6, 2});
@@ -199,7 +200,8 @@ void DisplayEncoding() {
   Near(prooftray::ApplyColorLook({input, input, input}, look, &ramp), {mixed, mixed, mixed});
   look.strength = 0;
   look.exposure_ev = 1.5f;
-  Near(prooftray::ApplyColorLook({input, input, input}, look, &ramp), {input, input, input});
+  const float exposed = static_cast<float>(1.055 * std::pow(linear * std::exp2(1.5), 1.0 / 2.4) - .055);
+  Near(prooftray::ApplyColorLook({input, input, input}, look, &ramp), {exposed, exposed, exposed});
 }
 
 void SceneEncodings() {
@@ -295,13 +297,15 @@ void RawExposureReference() {
       Near(prooftray::RenderLogPixel(camera, lut, prooftray::PrepareRawLogGrade(range, 1.f, look)), brighter);
 
       look.strength = 0;
-      const auto original = prooftray::RenderRawDefault(camera, prooftray::PrepareRawDefault());
+      auto exposed_camera = camera;
+      for (float& c : exposed_camera) c *= 2;
+      const auto display = prooftray::RenderRawDefault(exposed_camera, prooftray::PrepareRawDefault());
       const auto base = prooftray::RenderLogPixel(camera, lut, prooftray::PrepareRawLogGrade(range, 1.f, look));
-      Near(base, original);
-      Near(prooftray::RenderLogPixel(camera, lut, prooftray::PrepareRawLogGrade(range, -2.f, look)), original);
+      Near(base, display);
+      Near(prooftray::RenderLogPixel(camera, lut, prooftray::PrepareRawLogGrade(range, -2.f, look)), display);
       look.strength = .5f;
       prooftray::Rgb half{};
-      for (int c = 0; c < 3; ++c) half[c] = (original[c] + brighter[c]) / 2;
+      for (int c = 0; c < 3; ++c) half[c] = (display[c] + brighter[c]) / 2;
       Near(prooftray::RenderLogPixel(camera, lut, prooftray::PrepareRawLogGrade(range, 1.f, look)), half);
     }
   }
@@ -381,17 +385,6 @@ int main() {
     Check(prooftray::NLogCode(1) == 619 && prooftray::NLogCode(4) > 826, "Reference white or highlight headroom lost");
     Near(prooftray::GetLogEncoding(prooftray::LutEncoding::NLog).ToGamut({1, 1, 1}), {1, 1, 1});
     Near(prooftray::GetLogEncoding(prooftray::LutEncoding::NLog).ToGamut({2, 0, 0}), {1.2548078f, .1381946f, .0327828f});
-    const auto identity = prooftray::ParseCube(kIdentity);
-    const prooftray::Rgb gray{.18f, .18f, .18f};
-    const auto range = prooftray::LogRange::Full10;
-    const prooftray::Rgb neutral{.461356f, .461356f, .461356f};
-    Near(prooftray::RenderNLogReference(gray, identity, range, 1.f, 0.f, 0.f), neutral);
-    Near(prooftray::RenderNLogReference(gray, identity, range, 2.f, 2.f, 0.f), neutral);
-    const auto calibrated = prooftray::RenderNLogReference(gray, identity, range, 2.f, 0.f, 1.f);
-    Near(calibrated, prooftray::RenderNLogReference(gray, identity, range, 1.f, 1.f, 1.f));
-    Check(calibrated[0] > prooftray::RenderNLogReference(gray, identity, range, 1.f, 0.f, 1.f)[0], "k must affect the Log branch");
-    const float mid = (neutral[0] + calibrated[0]) / 2;
-    Near(prooftray::RenderNLogReference(gray, identity, range, 2.f, 0.f, .5f), {mid, mid, mid});
     std::cout << "Color LUT tests passed\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

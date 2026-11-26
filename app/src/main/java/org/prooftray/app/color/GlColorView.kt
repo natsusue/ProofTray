@@ -11,12 +11,11 @@ import java.nio.FloatBuffer
 import java.util.concurrent.atomic.AtomicReference
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
-import org.prooftray.app.domain.ColorLookSettings
 import org.prooftray.app.domain.LutPreviewData
 
 /** On-demand GLES 3 preview. The full-resolution export uses the equivalent C++ color pipeline. */
 class GlColorView(context: Context, onError: (String) -> Unit) : GLSurfaceView(context) {
-    private data class Frame(val bitmap: Bitmap, val lut: LutPreviewData?, val look: ColorLookSettings)
+    private data class Frame(val bitmap: Bitmap, val lut: LutPreviewData?)
     private val pending = AtomicReference<Frame?>(null)
     private val renderer = ColorRenderer { message -> post { onError(message) } }
 
@@ -28,10 +27,8 @@ class GlColorView(context: Context, onError: (String) -> Unit) : GLSurfaceView(c
         renderMode = RENDERMODE_WHEN_DIRTY
     }
 
-    fun update(bitmap: Bitmap, lut: LutPreviewData?, look: ColorLookSettings) {
-        look.usage.validateForPhoto()
-        require(!look.usesLog) { "Log 输入需要 RAW 原片" }
-        pending.set(Frame(bitmap, lut, look))
+    fun update(bitmap: Bitmap, lut: LutPreviewData?) {
+        pending.set(Frame(bitmap, lut))
         requestRender()
     }
 
@@ -112,7 +109,6 @@ class GlColorView(context: Context, onError: (String) -> Unit) : GLSurfaceView(c
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_3D, textures[1])
                 val lut = frame.lut
                 if (lut != null && lut.id != lutId) {
-                    check(lut.dimension == 3) { "1D LUT uses the compatible preview path" }
                     uploadLut(lut.size, lut.values)
                     lutId = lut.id
                 }
@@ -121,17 +117,6 @@ class GlColorView(context: Context, onError: (String) -> Unit) : GLSurfaceView(c
                 GLES30.glUniform1i(location("hasLut"), if (lut == null) 0 else 1)
                 GLES30.glUniform1i(location("lutSize"), lut?.size ?: 2)
                 GLES30.glUniform1i(location("premultiplied"), if (frame.bitmap.isPremultiplied) 1 else 0)
-                GLES30.glUniform3fv(location("domainMin"), 1, lut?.domainMin ?: floatArrayOf(0f, 0f, 0f), 0)
-                GLES30.glUniform3fv(location("domainMax"), 1, lut?.domainMax ?: floatArrayOf(1f, 1f, 1f), 0)
-                // Version 2 arrives as the complete C++ display table. Only legacy recipes use the old shader operators.
-                val shaderLook = if (frame.look.renderVersion == 2) ColorLookSettings() else frame.look
-                GLES30.glUniform1f(location("strength"), shaderLook.strength)
-                GLES30.glUniform1i(location("inputEncoding"), checkNotNull(shaderLook.usage.input).nativeCode)
-                GLES30.glUniform1i(location("outputEncoding"), checkNotNull(shaderLook.usage.output).nativeCode)
-                GLES30.glUniform1f(location("exposure"), shaderLook.exposure)
-                GLES30.glUniform1f(location("contrast"), shaderLook.contrast)
-                GLES30.glUniform1f(location("saturation"), shaderLook.saturation)
-                GLES30.glUniform1f(location("warmth"), shaderLook.warmth)
                 val aspect = frame.bitmap.width.toFloat() / frame.bitmap.height
                 val viewport = width.toFloat() / height
                 val x = minOf(1f, aspect / viewport)
@@ -186,18 +171,10 @@ class GlColorView(context: Context, onError: (String) -> Unit) : GLSurfaceView(c
             in vec2 uv;
             uniform sampler2D imageTexture;
             uniform sampler3D lutTexture;
-            uniform int hasLut, lutSize, premultiplied, inputEncoding, outputEncoding;
-            uniform vec3 domainMin, domainMax;
-            uniform float strength, exposure, contrast, saturation, warmth;
+            uniform int hasLut, lutSize, premultiplied;
             out vec4 result;
-            vec3 linearRgb(vec3 v) {
-                return mix(v / 12.92, pow((v + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), v));
-            }
-            vec3 encodedRgb(vec3 v) {
-                return mix(v * 12.92, 1.055 * pow(max(v, vec3(0.0)), vec3(1.0/2.4)) - 0.055, step(vec3(0.0031308), v));
-            }
             vec3 lookup(vec3 color) {
-                vec3 position = clamp((color-domainMin)/(domainMax-domainMin), 0.0, 1.0) * float(lutSize-1);
+                vec3 position = color * float(lutSize-1);
                 ivec3 base = min(ivec3(floor(position)), ivec3(lutSize-2));
                 vec3 fraction = position - vec3(base);
                 ivec3 order = ivec3(0,1,2);
@@ -218,20 +195,7 @@ class GlColorView(context: Context, onError: (String) -> Unit) : GLSurfaceView(c
                 vec4 source = texture(imageTexture, uv);
                 vec3 original = premultiplied == 1 ? source.rgb / max(source.a, 0.00001) : source.rgb;
                 original = clamp(original, 0.0, 1.0);
-                vec3 color = original;
-                if (exposure != 0.0 || warmth != 0.0) {
-                    vec3 gain = exp2(vec3(exposure+warmth*0.25, exposure, exposure-warmth*0.25));
-                    color = clamp(encodedRgb(linearRgb(color) * gain), 0.0, 1.0);
-                }
-                color = 0.5 + (color-0.5) * (1.0+contrast);
-                float luma = dot(color, vec3(0.2126,0.7152,0.0722));
-                color = clamp(vec3(luma) + (color-vec3(luma))*saturation, 0.0, 1.0);
-                if (hasLut == 1) {
-                    if (inputEncoding == 2) color = pow(linearRgb(color), vec3(1.0/2.4));
-                    color = lookup(color);
-                    if (outputEncoding == 2) color = encodedRgb(pow(max(color, vec3(0.0)), vec3(2.4)));
-                }
-                color = clamp(mix(original, color, strength), 0.0, 1.0);
+                vec3 color = hasLut == 1 ? clamp(lookup(original), 0.0, 1.0) : original;
                 result = vec4(color * source.a + vec3(0.12) * (1.0-source.a), 1.0);
             }
         """.trimIndent()

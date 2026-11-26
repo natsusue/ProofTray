@@ -48,14 +48,6 @@ internal val LocalColorGesture = staticCompositionLocalOf<(Boolean) -> Unit> { {
 @Composable
 internal fun AdvancedColorControls(tab: Int, look: ColorLookSettings, onChange: (ColorLookSettings) -> Unit,
     curveHistogram: @Composable (Boolean) -> RgbHistogram?) {
-    if (look.renderVersion == 1) {
-        Column(Modifier.padding(horizontal = 20.dp)) {
-            Text("此预设保留旧版效果。启用高级编辑后，LUT 强度只影响 LUT，基础调整始终保留。",
-                style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { onChange(look.copy(renderVersion = 2, name = "自定义")) }) { Text("启用高级编辑") }
-        }
-        if (tab != 1) return
-    }
     val change: (ColorLookSettings) -> Unit = { onChange(it.copy(name = "自定义")) }
     when (tab) {
         1 -> BasicColorControls(look, change)
@@ -73,12 +65,10 @@ private fun BasicColorControls(look: ColorLookSettings, change: (ColorLookSettin
     if (group == 0) {
         ColorSlider("曝光", look.exposure, -3f..3f, 0f, ev = true) { change(look.copy(exposure = it)) }
         ColorSlider("对比度", look.contrast) { change(look.copy(contrast = it)) }
-        if (look.renderVersion == 2) {
-            ColorSlider("高光", e.highlights) { change(look.copy(adjustments = e.copy(highlights = it))) }
-            ColorSlider("阴影", e.shadows) { change(look.copy(adjustments = e.copy(shadows = it))) }
-            ColorSlider("白色色阶", e.whites) { change(look.copy(adjustments = e.copy(whites = it))) }
-            ColorSlider("黑色色阶", e.blacks) { change(look.copy(adjustments = e.copy(blacks = it))) }
-        }
+        ColorSlider("高光", e.highlights) { change(look.copy(adjustments = e.copy(highlights = it))) }
+        ColorSlider("阴影", e.shadows) { change(look.copy(adjustments = e.copy(shadows = it))) }
+        ColorSlider("白色色阶", e.whites) { change(look.copy(adjustments = e.copy(whites = it))) }
+        ColorSlider("黑色色阶", e.blacks) { change(look.copy(adjustments = e.copy(blacks = it))) }
         TextButton(onClick = { change(look.copy(exposure = 0f, contrast = 0f,
             adjustments = e.copy(highlights = 0f, shadows = 0f, whites = 0f, blacks = 0f))) }, modifier = Modifier.padding(start = 8.dp)) {
             Text("重置明暗")
@@ -87,12 +77,10 @@ private fun BasicColorControls(look: ColorLookSettings, change: (ColorLookSettin
         ColorSlider("冷暖", look.warmth, colors = listOf(Color(0xFF6098DA), Color(0xFFDEDCD6), Color(0xFFE6B959))) {
             change(look.copy(warmth = it))
         }
-        if (look.renderVersion == 2) {
-            ColorSlider("色调", look.tint, colors = listOf(Color(0xFF6CBF8B), Color(0xFFDEDCD6), Color(0xFFC975B8))) {
-                change(look.copy(tint = it))
-            }
-            ColorSlider("鲜艳度", e.vibrance) { change(look.copy(adjustments = e.copy(vibrance = it))) }
+        ColorSlider("色调", look.tint, colors = listOf(Color(0xFF6CBF8B), Color(0xFFDEDCD6), Color(0xFFC975B8))) {
+            change(look.copy(tint = it))
         }
+        ColorSlider("鲜艳度", e.vibrance) { change(look.copy(adjustments = e.copy(vibrance = it))) }
         ColorSlider("饱和度", look.saturation, 0f..2f, 1f) { change(look.copy(saturation = it)) }
         TextButton(onClick = { change(look.copy(warmth = 0f, tint = 0f, saturation = 1f, adjustments = e.copy(vibrance = 0f))) },
             modifier = Modifier.padding(start = 8.dp)) { Text("重置色彩") }

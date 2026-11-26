@@ -27,7 +27,7 @@ import org.prooftray.app.domain.validateLutName
 
 data class ColorImportResult(val selectableId: String?, val notice: String? = null)
 
-internal class PreviewColorTable(val data: LutPreviewData, val bakedHandle: Long = 0L)
+internal class PreviewColorTable(val data: LutPreviewData, val bakedHandle: Long)
 
 class LutRepository private constructor(context: Context) {
     private val resolver = context.applicationContext.contentResolver
@@ -235,10 +235,7 @@ class LutRepository private constructor(context: Context) {
 
     private fun importPreset(bytes: ByteArray, fallbackName: String): ColorImportResult {
         val json = LookCodec.checkedJson(bytes.toString(Charsets.UTF_8))
-        require(json.optString("schema") in LookCodec.PRESET_SCHEMAS && json.optInt("version") in 1..LookCodec.PRESET_VERSION) {
-            "请选择 .ptlook 预设，暂不支持 Lightroom XMP。"
-        }
-        var look = LookCodec.decode(json.getJSONObject("look"))
+        var look = LookCodec.decodePresetLook(json)
         val packed = json.optJSONObject("lut")
         var table: LutAsset? = null
         if (packed != null) {
@@ -265,23 +262,15 @@ class LutRepository private constructor(context: Context) {
         return ColorImportResult(id.takeIf { reason == null }, reason ?: table?.domainWarning(look.usage))
     }
 
-    internal fun previewData(id: String): PreviewColorTable = synchronized(lock) {
-        val handle = handle(id)
-        val info = NativeColor.values(handle, true)
-        PreviewColorTable(LutPreviewData(id, info[0].toInt(), info[1].toInt(), info.copyOfRange(2, 5), info.copyOfRange(5, 8),
-            NativeColor.values(handle, false)))
-    }
-
     internal fun previewData(look: ColorLookSettings): PreviewColorTable = synchronized(lock) {
         look.validate()
-        require(look.renderVersion == 2 && !look.usesLog) { "此配方不能烘焙为显示预览" }
+        require(!look.usesLog) { "此配方不能烘焙为显示预览" }
         val key = look.copy(name = "")
         previewTables.remove(key)?.let { previewTables[key] = it; return it }
         val handle = NativeColor.bake(look.lutId?.let(::handle) ?: 0L, look.parameters(), look.adjustments.parameters(),
             checkNotNull(look.usage.input).nativeCode, checkNotNull(look.usage.output).nativeCode)
         val table = try {
-            val data = LutPreviewData(UUID.randomUUID().toString(), 3, 65, floatArrayOf(0f, 0f, 0f), floatArrayOf(1f, 1f, 1f),
-                NativeColor.values(handle, false))
+            val data = LutPreviewData(UUID.randomUUID().toString(), 65, NativeColor.values(handle, false))
             PreviewColorTable(data, handle).also { previewTables[key] = it }
         } catch (error: Throwable) { NativeColor.release(handle); throw error }
         if (previewTables.size > 2) NativeColor.release(checkNotNull(previewTables.remove(previewTables.keys.first())).bakedHandle)
@@ -293,8 +282,8 @@ class LutRepository private constructor(context: Context) {
         fun sample(handle: Long) = NativeColor.histogram(handle, bitmap, bitmap.isPremultiplied, look?.parameters(), look?.adjustments?.parameters(),
             look?.usage?.input?.nativeCode ?: 0, look?.usage?.output?.nativeCode ?: 0, viewportWidth, viewportHeight)
         // Native sampling holds a shared reference while the next display table bakes or replaces this one.
-        if (table != null && table.bakedHandle != 0L) return sample(table.bakedHandle)
-        val id = table?.data?.id ?: look?.lutId ?: return sample(0L)
+        if (table != null) return sample(table.bakedHandle)
+        val id = look?.lutId ?: return sample(0L)
         return synchronized(lock) { sample(handle(id)) }
     }
 

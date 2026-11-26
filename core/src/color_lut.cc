@@ -6,7 +6,6 @@
 #include <iomanip>
 #include <limits>
 #include <locale>
-#include <optional>
 #include <sstream>
 #include <stdexcept>
 
@@ -42,21 +41,6 @@ std::string StripComment(std::string line) {
 Rgb Vertex(const ColorLut& lut, int red, int green, int blue) {
   const size_t index = ((static_cast<size_t>(blue) * lut.size + green) * lut.size + red) * 3;
   return {lut.values[index], lut.values[index + 1], lut.values[index + 2]};
-}
-
-Rgb AdjustAndSample(Rgb color, const ColorLook& look, const ColorLut* lut) {
-  for (auto& channel : color) channel = 0.5f + (channel - 0.5f) * (1.0f + look.contrast);
-  const float luma = color[0] * 0.2126f + color[1] * 0.7152f + color[2] * 0.0722f;
-  for (auto& channel : color) channel = Clamp(luma + (channel - luma) * look.saturation);
-  if (!lut) return color;
-  if (look.input_encoding == LutEncoding::Rec709Gamma24) {
-    for (float& c : color) c = std::pow(Linear(c), 1.f / 2.4f);
-  }
-  color = SampleLut(*lut, color);
-  if (look.output_encoding == LutEncoding::Rec709Gamma24) {
-    for (float& c : color) c = Encoded(std::pow(std::max(0.f, c), 2.4f));
-  }
-  return color;
 }
 
 }  // namespace
@@ -213,12 +197,8 @@ void ValidateLook(const ColorLook& look) {
 }
 
 void ValidateLookParameters(const ColorLook& look) {
-  if (look.render_version != 1 && look.render_version != 2) throw std::invalid_argument("Unsupported color recipe version");
   if (!std::isfinite(look.tint) || std::abs(look.tint) > 1) throw std::invalid_argument("Invalid tint");
   ValidateColorAdjustments(look.adjustments);
-  if (look.render_version == 1 && (look.tint != 0 || look.adjustments != ColorAdjustments{})) {
-    throw std::invalid_argument("Advanced edits require a version 2 recipe");
-  }
   const std::array<float, 5> fields{look.strength, look.exposure_ev, look.contrast, look.saturation, look.warmth};
   for (float value : fields) if (!std::isfinite(value)) throw std::invalid_argument("Look parameters must be finite");
   if (look.strength < 0 || look.strength > 1 || look.exposure_ev < -3 || look.exposure_ev > 3 || look.contrast < -1 || look.contrast > 1 ||
@@ -257,71 +237,42 @@ Rgb SampleLut(const ColorLut& lut, const Rgb& input) {
   return result;
 }
 
-Rgb ApplyDisplayLut(const Rgb& srgb, const ColorLook& look, const ColorLut* lut) {
-  if (!lut || look.strength == 0) return srgb;
+Rgb ApplyDisplayLut(const Rgb& srgb, const ColorLut* lut, float strength, LutEncoding input, LutEncoding output) {
+  if (!lut || strength == 0) return srgb;
   auto color = srgb;
-  if (look.input_encoding == LutEncoding::Rec709Gamma24) for (float& c : color) c = std::pow(Linear(c), 1.f / 2.4f);
+  if (input == LutEncoding::Rec709Gamma24) for (float& c : color) c = std::pow(Linear(c), 1.f / 2.4f);
   color = SampleLut(*lut, color);
-  if (look.output_encoding == LutEncoding::Rec709Gamma24) {
+  if (output == LutEncoding::Rec709Gamma24) {
     for (float& c : color) c = Encoded(std::pow(std::max(0.f, c), 2.4f));
   }
-  for (int c = 0; c < 3; ++c) color[c] = Clamp(std::lerp(srgb[c], Clamp(color[c]), look.strength));
+  for (int c = 0; c < 3; ++c) color[c] = Clamp(std::lerp(srgb[c], Clamp(color[c]), strength));
   return color;
 }
 
 Rgb ApplyColorLook(const Rgb& srgb, const ColorLook& look, const ColorLut* lut) {
-  if (look.render_version == 2) {
-    Rgb color = srgb;
+  Rgb color = srgb;
+  if (look.exposure_ev != 0 || look.warmth != 0 || look.tint != 0) {
     const Rgb gains{std::exp2(look.exposure_ev + look.warmth * .25f), std::exp2(look.exposure_ev - look.tint * .25f),
                     std::exp2(look.exposure_ev - look.warmth * .25f)};
-    if (look.exposure_ev != 0 || look.warmth != 0 || look.tint != 0) {
-      for (int c = 0; c < 3; ++c) color[c] = Exposure(color[c], gains[c]);
-    }
-    return ApplyDisplayAdjustments(ApplyDisplayLut(color, look, lut), look);
+    for (int c = 0; c < 3; ++c) color[c] = Exposure(color[c], gains[c]);
   }
-  if (look.strength == 0) return srgb;
-  Rgb adjusted = srgb;
-  if (look.exposure_ev != 0 || look.warmth != 0) {
-    const Rgb gains{std::exp2(look.exposure_ev + look.warmth * 0.25f), std::exp2(look.exposure_ev),
-                    std::exp2(look.exposure_ev - look.warmth * 0.25f)};
-    for (size_t channel = 0; channel < 3; ++channel) adjusted[channel] = Exposure(srgb[channel], gains[channel]);
-  }
-  adjusted = AdjustAndSample(adjusted, look, lut);
-  for (size_t channel = 0; channel < 3; ++channel) adjusted[channel] = Clamp(srgb[channel] + look.strength * (adjusted[channel] - srgb[channel]));
-  return adjusted;
+  return ApplyDisplayAdjustments(ApplyDisplayLut(color, lut, look.strength, look.input_encoding, look.output_encoding), look);
 }
 
 void ApplyColorLookRgba(std::span<uint8_t> pixels, size_t width, size_t height, size_t stride, bool premultiplied,
                         const ColorLook& look, const ColorLut* lut) {
-  ValidateLook(look);
-  if (lut) ValidateLut(*lut);
   if (width > std::numeric_limits<size_t>::max() / 4 || stride < width * 4 || (height && stride > pixels.size() / height)) {
     throw std::invalid_argument("Invalid RGBA image dimensions");
   }
-  if (look.render_version == 1 && look.strength == 0) return;
-  std::optional<ColorLut> baked;
-  if (look.render_version == 2) baked.emplace(BakeColorLook(look, lut));
-  std::array<Rgb, 256> curve{};
-  const Rgb gains{std::exp2(look.exposure_ev + look.warmth * 0.25f), std::exp2(look.exposure_ev),
-                  std::exp2(look.exposure_ev - look.warmth * 0.25f)};
-  for (size_t index = 0; index < curve.size(); ++index) {
-    for (size_t channel = 0; channel < 3; ++channel) curve[index][channel] = Exposure(static_cast<float>(index) / 255.0f, gains[channel]);
-  }
+  const auto baked = BakeColorLook(look, lut);
   for (size_t row = 0; row < height; ++row) {
     auto* pixel = pixels.data() + row * stride;
     for (size_t column = 0; column < width; ++column, pixel += 4) {
       const float alpha = static_cast<float>(pixel[3]) / 255.0f;
       if (premultiplied && pixel[3] == 0) { pixel[0] = pixel[1] = pixel[2] = 0; continue; }
-      Rgb original{}, adjusted{};
+      Rgb original{};
       for (size_t channel = 0; channel < 3; ++channel) original[channel] = Clamp(pixel[channel] / (premultiplied ? 255.0f * alpha : 255.0f));
-      if (baked) adjusted = SampleLut(*baked, original);
-      else if (!premultiplied || pixel[3] == 255) {
-        for (size_t channel = 0; channel < 3; ++channel) adjusted[channel] = curve[pixel[channel]][channel];
-        adjusted = AdjustAndSample(adjusted, look, lut);
-        for (size_t channel = 0; channel < 3; ++channel) {
-          adjusted[channel] = Clamp(original[channel] + look.strength * (adjusted[channel] - original[channel]));
-        }
-      } else adjusted = ApplyColorLook(original, look, lut);
+      const auto adjusted = SampleLut(baked, original);
       for (size_t channel = 0; channel < 3; ++channel) {
         pixel[channel] = static_cast<uint8_t>(std::lround(Clamp(adjusted[channel]) * (premultiplied ? alpha : 1.0f) * 255.0f));
       }

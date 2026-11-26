@@ -25,10 +25,9 @@ struct LogGrade {
   const LogEncodingSpec& spec;
   LogRange range;
   Rgb gain;
-  float strength, contrast, saturation;
+  float strength;
   std::optional<RawDisplayTransform> base_render = std::nullopt;
   LutEncoding output_encoding = LutEncoding::Rec709Gamma24;
-  bool modern = false;
   Rgb base_gain{1, 1, 1};
   std::shared_ptr<const ColorLut> display_edits;
 };
@@ -41,7 +40,6 @@ Rgb RenderLogPixel(const Rgb& linear_srgb, const ColorLut& lut, const LogGrade& 
 
 // Nikon reference probe uses the unquantized 10-bit code.
 double NLogCode(double reflectance);
-Rgb RenderNLogReference(const Rgb& linear_srgb, const ColorLut& lut, LogRange range, float k, float exposure_ev, float strength);
 
 }  // namespace prooftray
 #endif  // PROOFTRAY_LOG_ENCODING_H_

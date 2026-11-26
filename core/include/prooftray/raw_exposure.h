@@ -21,7 +21,7 @@ struct RawExposureReference {
 inline constexpr RawExposureReference kGenericRawExposureReference{1.f / .45f, "oiio-generic", false};
 
 // Keep buffers unscaled. The scene reference and user K apply only to the technical LUT branch.
-// The neutral endpoint uses the standard display transform; version 2 retains basic edits there, without reference/K gain.
+// The neutral endpoint uses the standard display transform with basic edits, without reference/K gain.
 inline LogGrade PrepareRawLogGrade(LogRange range, float user_gain_ev, const ColorLook& look,
                                   const RawExposureReference& reference = kGenericRawExposureReference,
                                   const RawRenderSettings& settings = {}) {

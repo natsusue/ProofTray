@@ -17,16 +17,15 @@ struct RawDisplayTransform {
 };
 
 struct RawDisplayGrade {
-  RawDisplayTransform base, adjusted;
-  Rgb warmth_gain;
-  ColorLook display_look;
-  float strength;
+  RawDisplayTransform transform;
+  Rgb gain;
+  float lut_strength;
+  LutEncoding lut_input, lut_output;
   std::shared_ptr<const ColorLut> display_edits;
-  bool modern = false;
 };
 
 // DNG SDK SDR reference: linear ProPhoto D50, exposure/shadow ramp, ACR3 RGB tone, final sRGB conversion/encoding.
-RawDisplayTransform PrepareRawDefault(const RawRenderSettings& settings = {}, float exposure_ev = 0);
+RawDisplayTransform PrepareRawDefault(const RawRenderSettings& settings = {});
 Rgb RenderRawDefault(const Rgb& linear_srgb, const RawDisplayTransform& transform);
 RawDisplayGrade PrepareRawDisplayGrade(const RawRenderSettings& settings, const ColorLook& look);
 Rgb RenderRawDisplayPixel(const Rgb& linear_srgb, const ColorLut* lut, const RawDisplayGrade& grade);

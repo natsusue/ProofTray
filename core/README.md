@@ -56,7 +56,8 @@ Color processing:
 
 - `color_lut.h` / `color_lut.cc` parse CUBE and decoded Hald RGBA8 data without Android dependencies.
 - 1D curves interpolate independently; 3D tables use red-fastest tetrahedral interpolation.
-- Pixel transforms apply linear-light exposure/channel warmth, encoded contrast/saturation, LUT, then global strength in SDR sRGB.
+- Exposure, warmth and tint act in linear light. LUT strength blends the LUT result before display adjustments.
+- Display adjustments apply contrast, tonal controls, master and channel curves, HSL, color grading, vibrance and saturation in SDR sRGB.
 - RGBA8 processing preserves alpha and row padding. Premultiplied alpha is removed before grading and restored afterwards.
 - The versioned little-endian LUT binary stores dimensions, domain and floats; titles and attribution live in Android metadata.
 - `tests/color_lut_test.cc` adds malformed input, interpolation, binary round-trip, Hald ordering and alpha/stride regressions.

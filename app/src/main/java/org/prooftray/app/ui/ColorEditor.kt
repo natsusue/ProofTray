@@ -104,9 +104,8 @@ internal fun ColorEditor(
     val context = LocalContext.current
     val controlsHeight = (LocalConfiguration.current.screenHeightDp * 0.5f).dp
     val repository = remember(context) { LutRepository.get(context) }
-    // "原图" first, then imported LUTs (the main content), then the user's own presets.
     val options = remember(state.colorPresets, state.luts) {
-        listOf(LookOption(ORIGINAL_KEY, "原图", ColorLookSettings())) +
+        listOf(LookOption(ORIGINAL_KEY, "无 LUT", ColorLookSettings())) +
             state.luts.filter { it.defaultUsage.unavailableReason == null }.map { lut ->
                 lut.look().let { LookOption(checkNotNull(it.lutKey), lut.name, it) }
             } + state.colorPresets.filter { it.look.usage.unavailableReason == null }.map { LookOption("preset:${it.id}", it.name, it.look) }
@@ -151,17 +150,14 @@ internal fun ColorEditor(
     val lut by produceState(ColorPreviewLut(), raw) {
         // Keep one bake in flight and then render the newest recipe; continuous drags must not wait for a debounce pause.
         snapshotFlow { liveLook.copy(name = "") }.conflate().collect { recipe ->
-            val id = recipe.lutId
-            val needed = !recipe.isIdentity && (recipe.renderVersion == 2 || id != null) && !recipe.usesLog && !raw
-            if (needed && recipe.renderVersion == 1 && value.table?.data?.id == id && value.error == null) {
-                value = value.copy(loading = false, recipe = recipe)
+            if (recipe.isIdentity || recipe.usesLog || raw) {
+                value = ColorPreviewLut(recipe = recipe)
                 return@collect
             }
-            if (needed) value = value.copy(loading = true, error = null)
-            value = if (!needed) ColorPreviewLut(recipe = recipe) else withContext(Dispatchers.IO) {
+            value = value.copy(loading = true, error = null)
+            value = withContext(Dispatchers.IO) {
                 try {
-                    val table = if (recipe.renderVersion == 2) repository.previewData(recipe) else repository.previewData(checkNotNull(id))
-                    ColorPreviewLut(table = table, recipe = recipe)
+                    ColorPreviewLut(table = repository.previewData(recipe), recipe = recipe)
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: OutOfMemoryError) { ColorPreviewLut(error = "内存不足，无法载入 LUT", recipe = recipe) }
                 catch (error: Exception) { ColorPreviewLut(error = error.message ?: "无法载入 LUT", recipe = recipe) }
@@ -170,7 +166,7 @@ internal fun ColorEditor(
     }
     val displayedLook = if (original || holding || lut.error != null) ColorLookSettings() else look
     val displayTable = lut.table.takeUnless { displayedLook.isIdentity }
-    val compatible = !raw && !look.usesLog && (gpuFailed || !supportsGpu || lut.table?.data?.dimension == 1)
+    val compatible = !raw && !look.usesLog && (gpuFailed || !supportsGpu)
     val cpu = rememberEditResult(ColorPreviewSource(), source.image, displayedLook, compatible) {
         val image = source.image ?: return@rememberEditResult ColorPreviewSource()
         if (!compatible) return@rememberEditResult ColorPreviewSource()
@@ -183,11 +179,7 @@ internal fun ColorEditor(
         when {
             raw -> rememberColorHistogram(source.image, repository, viewport = previewSize)
             compatible -> rememberColorHistogram(cpu.image, repository, viewport = previewSize)
-            else -> {
-                // The GL shader applies legacy controls separately. Its version 2 table already contains every adjustment.
-                val shaderLook = displayedLook.takeIf { it.renderVersion == 1 && !it.isIdentity }?.copy(name = "", lutId = null)
-                rememberColorHistogram(source.image, repository, shaderLook, displayTable, previewSize)
-            }
+            else -> rememberColorHistogram(source.image, repository, table = displayTable, viewport = previewSize)
         }
     } else null
     DisposableEffect(lifecycle, glView) {
@@ -199,12 +191,12 @@ internal fun ColorEditor(
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer); view?.onPause() }
     }
-    val tableReady = look.renderVersion == 1 || look.isIdentity || lut.recipe == look.copy(name = "")
+    val tableReady = look.isIdentity || lut.recipe == look.copy(name = "")
     val ready = if (raw) (!look.usesLog || allowLog) && source.renderedLook == logLook && source.bitmap != null && source.error == null
         else source.bitmap != null && source.error == null && lut.error == null && !lut.loading && cpu.error == null &&
             tableReady && (!compatible || (cpu.image != null && cpu.renderedLook == displayedLook))
-    val blendable = look.copy(name = "", strength = 1f) != ColorLookSettings(name = "")
-    val savable = blendable && state.colorPresets.none { it.look.copy(name = look.name) == look }
+    val savable = look.copy(name = "", strength = 1f) != ColorLookSettings(name = "") &&
+        state.colorPresets.none { it.look.copy(name = look.name) == look }
     SideEffect { onReady(ready) }
     CompositionLocalProvider(LocalColorGesture provides onGesture) {
     Column(Modifier.fillMaxSize()) {
@@ -226,7 +218,7 @@ internal fun ColorEditor(
                         glView = view; glLeases[view] = checkNotNull(source.image).retain()
                     } },
                     modifier = Modifier.fillMaxSize(),
-                    update = { it.update(bitmap, displayTable?.data, displayedLook) },
+                    update = { it.update(bitmap, displayTable?.data) },
                     onReset = null,
                     onRelease = { it.releasePreview(); glLeases.remove(it)?.close(); if (glView === it) glView = null }
                 )
@@ -249,9 +241,9 @@ internal fun ColorEditor(
             }
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 val sourceLabel = when {
-                    look.renderVersion == 1 -> "兼容旧版预设"
-                    raw -> if (look.usesLog) "RAW · Log" else "RAW · 标准"
-                    else -> "照片调色"
+                    !raw -> "照片调色"
+                    look.usesLog -> "RAW · Log"
+                    else -> "RAW · 标准"
                 }
                 Text(sourceLabel, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -274,7 +266,7 @@ internal fun ColorEditor(
                     onLookKeyChange(option.key)
                 }, enabled = allowLog || !option.look.usesLog) { LookThumbnail(thumbnail.image, linear.thumb, option.look, repository) }
                 LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    item(key = ORIGINAL_KEY) { OptionTile(options.first().copy(name = if (look.renderVersion == 2) "无 LUT" else "原图")) }
+                    item(key = ORIGINAL_KEY) { OptionTile(options.first()) }
                     item(key = "import") {
                         LookTile(if (state.colorBusy) "正在导入" else "导入 LUT", false,
                             onClick = { onImport() }, enabled = !state.colorBusy) {
@@ -301,14 +293,12 @@ internal fun ColorEditor(
                             actions.onSetLutDefault(lutId, usage)
                         }
                     }
-                }
-                val defaultStrength = if (lutId != null) DEFAULT_LUT_STRENGTH else 1f
-                if (blendable && (look.renderVersion == 1 || lutId != null))
-                    EditorSlider(if (look.renderVersion == 2) "LUT 强度" else "整体强度", look.strength, 0f..1f,
-                        "${(look.strength * 100).roundToInt()}%",
-                        onReset = if (look.strength != defaultStrength) ({ onLookChange(look.copy(strength = defaultStrength)) }) else null) {
+                    val resetStrength = { onLookChange(look.copy(strength = DEFAULT_LUT_STRENGTH)) }
+                    EditorSlider("LUT 强度", look.strength, 0f..1f, "${(look.strength * 100).roundToInt()}%",
+                        onReset = resetStrength.takeIf { look.strength != DEFAULT_LUT_STRENGTH }) {
                         onLookChange(look.copy(strength = it))
                     }
+                }
             } else {
                 AdvancedColorControls(tab, look, onLookChange) { singleChannel ->
                     // The GPU samples the fitted texture before the curve. CPU and RAW develop at bitmap resolution.

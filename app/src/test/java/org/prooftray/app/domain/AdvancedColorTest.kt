@@ -15,20 +15,22 @@ class AdvancedColorTest {
         val look = ColorLookSettings(tint = .2f, exposure = .4f, adjustments = edits)
         val envelope = LookCodec.presetEnvelope("测试", look)
         assertEquals(2, envelope.getInt("version"))
-        assertEquals(look, LookCodec.decode(envelope.getJSONObject("look")))
-        assertEquals(look, LookCodec.decode(LookCodec.checkedJson(envelope.toString()).getJSONObject("look")))
+        assertEquals(look, LookCodec.decodePresetLook(LookCodec.checkedJson(envelope.toString())))
         val task = ExportTask("task", PhotoAsset("photo", "content:photo", "a.nef", MediaFormat.RAW), ExportOptions(look = look), "")
         assertEquals(task, RecordCodec.decodeTask(RecordCodec.encodeTask(task)))
     }
 
-    @Test fun legacyRecipesRetainTheirVersionAndWholeLookStrength() {
-        val old = LookCodec.encode(ColorLookSettings(exposure = 1f, strength = 0f))
-        old.remove("renderVersion"); old.remove("tint"); old.remove("adjustments")
-        val decoded = LookCodec.decode(old)
-        assertEquals(1, decoded.renderVersion)
-        assertTrue(decoded.isIdentity)
-        assertEquals(1, LookCodec.presetEnvelope("旧预设", decoded).getInt("version"))
-        assertFalse(decoded.copy(renderVersion = 2).isIdentity)
+    @Test fun onlyVersionTwoPresetsAndRecipesAreAccepted() {
+        val look = ColorLookSettings(exposure = 1f, strength = 0f)
+        val envelope = LookCodec.presetEnvelope("测试", look).put("schema", "org.openbridge.look")
+        assertEquals(look, LookCodec.decodePresetLook(envelope))
+        for (version in listOf(1, 2.5, 3, "2")) {
+            assertThrows(IllegalArgumentException::class.java) { LookCodec.decodePresetLook(envelope.put("version", version)) }
+        }
+        envelope.put("version", 2)
+        val recipe = envelope.getJSONObject("look")
+        recipe.remove("renderVersion")
+        assertThrows(IllegalArgumentException::class.java) { LookCodec.decodePresetLook(envelope) }
     }
 
     @Test fun zeroLutStrengthDoesNotEraseAdvancedOrBasicEdits() {
@@ -57,15 +59,13 @@ class AdvancedColorTest {
         assertEquals(7, look.parameters().size)
         assertEquals(2f, look.parameters()[5], 0f)
         assertEquals(.2f, look.parameters()[6], 0f)
-        assertThrows(IllegalArgumentException::class.java) { look.copy(renderVersion = 1).validate() }
-        assertThrows(IllegalArgumentException::class.java) { look.copy(renderVersion = 3).validate() }
         assertThrows(IllegalArgumentException::class.java) { edits.copy(hsl = listOf(HslBand())).validate() }
         assertThrows(IllegalArgumentException::class.java) { edits.copy(shadows = Float.NaN).validate() }
     }
 
     @Test fun invalidPresetVersionsAndMalformedCurvesAreRejected() {
         val json = LookCodec.encode(ColorLookSettings(adjustments = edits))
-        for (version in listOf(0, 3, 1.5, "2")) {
+        for (version in listOf(1, 3, 1.5, "2")) {
             assertThrows(IllegalArgumentException::class.java) { LookCodec.decode(json.put("renderVersion", version)) }
         }
         json.put("renderVersion", 2)

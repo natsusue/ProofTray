@@ -21,37 +21,32 @@ template <typename Work> void Reject(Work work) {
   throw std::runtime_error("Invalid edits were accepted");
 }
 
-void VersionsAndStrength() {
+void LutStrength() {
   const auto inverse = ParseCube("LUT_1D_SIZE 2\n1 1 1\n0 0 0\n");
-  ColorLook modern;
-  modern.render_version = 2;
-  modern.strength = 0;
-  modern.exposure_ev = 1;
+  ColorLook look;
+  look.strength = 0;
+  look.exposure_ev = 1;
   const Rgb srgb{.2f, .3f, .4f};
-  const auto exposed = ApplyColorLook(srgb, modern, nullptr);
+  const auto exposed = ApplyColorLook(srgb, look, nullptr);
   Check(exposed[1] > srgb[1], "Zero LUT strength disabled exposure");
-  Near(ApplyColorLook(srgb, modern, &inverse), exposed);
-  auto legacy = modern;
-  legacy.render_version = 1;
-  Near(ApplyColorLook(srgb, legacy, &inverse), srgb);
-  modern.adjustments.shadows = .4f;
-  modern.adjustments.curves[0] = {{0, 0}, {.4f, .5f}, {1, 1}};
-  Near(ApplyColorLook(srgb, modern, &inverse), ApplyColorLook(srgb, modern, nullptr));
+  Near(ApplyColorLook(srgb, look, &inverse), exposed);
+  look.adjustments.shadows = .4f;
+  look.adjustments.curves[0] = {{0, 0}, {.4f, .5f}, {1, 1}};
+  Near(ApplyColorLook(srgb, look, &inverse), ApplyColorLook(srgb, look, nullptr));
 
   const Rgb raw{.1f, .15f, .2f};
   ColorLook identity;
-  identity.render_version = 2;
   Near(RenderRawDisplayPixel(raw, nullptr, PrepareRawDisplayGrade({}, identity)), RenderRawDefault(raw, PrepareRawDefault()));
   auto dim = identity;
   dim.exposure_ev = -2;
   const auto darker = RenderRawDisplayPixel({.9f, .9f, .9f}, nullptr, PrepareRawDisplayGrade({}, dim));
   const auto neutral = RenderRawDisplayPixel({.9f, .9f, .9f}, nullptr, PrepareRawDisplayGrade({}, identity));
-  Check(darker[0] < neutral[0] - .1f, "Modern negative exposure must lower highlights");
+  Check(darker[0] < neutral[0] - .1f, "Negative exposure must lower highlights");
 
-  modern.input_encoding = LutEncoding::SLog3Cine;
-  modern.output_encoding = LutEncoding::Direct;
-  const auto log = RenderLogPixel(raw, inverse, PrepareRawLogGrade(LogRange::Full10, 2.f, modern));
-  auto display = modern;
+  look.input_encoding = LutEncoding::SLog3Cine;
+  look.output_encoding = LutEncoding::Direct;
+  const auto log = RenderLogPixel(raw, inverse, PrepareRawLogGrade(LogRange::Full10, 2.f, look));
+  auto display = look;
   display.input_encoding = LutEncoding::Direct;
   Near(log, RenderRawDisplayPixel(raw, nullptr, PrepareRawDisplayGrade({}, display)));
 }
@@ -66,7 +61,6 @@ void CurvesAndHueBands() {
     previous = y;
   }
   ColorLook look;
-  look.render_version = 2;
   look.adjustments.hsl[0][0] = 1;
   Near(ApplyDisplayAdjustments({1, 0, 0}, look), {1, .5f, 0});
   Near(ApplyDisplayAdjustments({.5f, .5f, .5f}, look), {.5f, .5f, .5f});
@@ -88,7 +82,6 @@ void CurvesAndHueBands() {
 
 void BakeAndAlpha() {
   ColorLook look;
-  look.render_version = 2;
   look.exposure_ev = .2f;
   look.tint = .1f;
   look.adjustments.curves[0] = {{0, 0}, {.3f, .35f}, {.7f, .75f}, {1, 1}};
@@ -134,7 +127,6 @@ void GradingIsolationAndOverlap() {
   const std::array<float, 3> gray{.2f, .5f, .8f};
   for (int wheel = 0; wheel < 4; ++wheel) {
     ColorLook look;
-    look.render_version = 2;
     look.adjustments.grading[wheel] = {220, .5f, 0};
     const auto baked = BakeColorLook(look, nullptr);
     for (int region = 0; region < 3; ++region) {
@@ -156,7 +148,6 @@ void GradingIsolationAndOverlap() {
   }
 
   ColorLook all_ranges, global;
-  all_ranges.render_version = global.render_version = 2;
   for (int wheel = 0; wheel < 3; ++wheel) all_ranges.adjustments.grading[wheel] = {210, .3f, .15f};
   global.adjustments.grading[3] = {210, .3f, .15f};
   for (float blending : {0.f, .5f, 1.f}) {
@@ -186,15 +177,15 @@ void ValidateWire() {
   packed[43] = 2;
   packed[0] = std::numeric_limits<float>::quiet_NaN();
   Reject([&] { ParseColorAdjustments(packed); });
-  ColorLook old;
-  old.adjustments.vibrance = .2f;
-  Reject([&] { ValidateLookParameters(old); });
+  ColorLook invalid;
+  invalid.tint = 2.f;
+  Reject([&] { ValidateLookParameters(invalid); });
 }
 }  // namespace
 
 int main() {
   try {
-    VersionsAndStrength(); CurvesAndHueBands(); BakeAndAlpha(); GradingRangeMasks(); GradingIsolationAndOverlap(); ValidateWire();
+    LutStrength(); CurvesAndHueBands(); BakeAndAlpha(); GradingRangeMasks(); GradingIsolationAndOverlap(); ValidateWire();
     std::cout << "Advanced color tests passed\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

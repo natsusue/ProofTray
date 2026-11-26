@@ -190,7 +190,7 @@ Rgb ApplyDisplayAdjustments(const Rgb& input, const ColorLook& look) {
 }
 
 std::shared_ptr<const ColorLut> DisplayAdjustmentsTable(const ColorLook& look) {
-  if (look.render_version == 1 || (look.adjustments.IsIdentity() && look.contrast == 0 && look.saturation == 1)) return {};
+  if (look.adjustments.IsIdentity() && look.contrast == 0 && look.saturation == 1) return {};
   struct Entry { ColorAdjustments edits; float contrast, saturation; std::shared_ptr<const ColorLut> table; };
   static std::mutex mutex;
   static std::vector<Entry> cache;

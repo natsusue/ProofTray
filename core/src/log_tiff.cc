@@ -64,7 +64,6 @@ void WriteLogTiff(int fd, int width, int height, const LogExportSettings& settin
   look.exposure_ev = settings.exposure_ev;
   look.warmth = settings.warmth;
   look.tint = settings.tint;
-  look.render_version = 2;
   const auto grade = PrepareRawLogGrade(LogRange::Full10, settings.gain_ev, look);
   const auto description = Description(settings, grade);
   const auto check_cancelled = [&] { if (cancelled()) throw std::runtime_error("Log TIFF export cancelled"); };

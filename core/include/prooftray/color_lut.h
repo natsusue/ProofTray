@@ -41,7 +41,6 @@ struct ColorLook {
   float warmth = 0;
   LutEncoding input_encoding = LutEncoding::Direct;
   LutEncoding output_encoding = LutEncoding::Direct;
-  int render_version = 1;
   float tint = 0;
   ColorAdjustments adjustments;
 };
@@ -57,8 +56,8 @@ void ValidateLook(const ColorLook& look);
 Rgb SampleLut(const ColorLut& lut, const Rgb& input);
 // The input to ApplyColorLook must be finite, normalized sRGB.
 Rgb ApplyColorLook(const Rgb& srgb, const ColorLook& look, const ColorLut* lut);
-Rgb ApplyDisplayLut(const Rgb& srgb, const ColorLook& look, const ColorLut* lut);
-// Version 2 display edits are baked at 65^3. RAW and Log share this post-LUT table; JPEG bakes the whole point pipeline.
+Rgb ApplyDisplayLut(const Rgb& srgb, const ColorLut* lut, float strength, LutEncoding input, LutEncoding output);
+// Display edits are baked at 65^3. RAW and Log share this post-LUT table; JPEG bakes the whole point pipeline.
 Rgb ApplyDisplayAdjustments(const Rgb& srgb, const ColorLook& look);
 std::shared_ptr<const ColorLut> DisplayAdjustmentsTable(const ColorLook& look);
 ColorLut BakeColorLook(const ColorLook& look, const ColorLut* lut);

@@ -1,6 +1,7 @@
 package org.prooftray.app.color
 
 import org.json.JSONObject
+import org.prooftray.app.domain.COLOR_LOOK_VERSION
 import org.prooftray.app.domain.ColorLookSettings
 import org.prooftray.app.domain.ColorAdjustments
 import org.prooftray.app.domain.LutRange
@@ -8,7 +9,7 @@ import org.prooftray.app.domain.LutUsage
 
 object LookCodec {
     const val PRESET_SCHEMA = "org.prooftray.look"
-    const val PRESET_VERSION = 2
+    const val PRESET_VERSION = COLOR_LOOK_VERSION
     const val LUT_ENCODING = "ptlut1-base64"
     val PRESET_SCHEMAS = setOf(PRESET_SCHEMA, "org.openbridge.look")
     val LUT_ENCODINGS = setOf(LUT_ENCODING, "oblut1-base64")
@@ -29,18 +30,23 @@ object LookCodec {
         put("saturation", look.saturation.toDouble()); put("warmth", look.warmth.toDouble())
         put("lutUsage", encodeUsage(look.usage))
         if (look.usesLog || look.usage.unavailableReason != null) put("logGainEv", look.logGainEv.toDouble())
-        put("renderVersion", look.renderVersion)
-        if (look.renderVersion >= 2) {
-            put("tint", look.tint.toDouble())
-            put("adjustments", ColorAdjustmentsCodec.encode(look.adjustments))
-        }
+        put("renderVersion", COLOR_LOOK_VERSION)
+        put("tint", look.tint.toDouble())
+        put("adjustments", ColorAdjustmentsCodec.encode(look.adjustments))
     }
 
     fun presetEnvelope(name: String, look: ColorLookSettings): JSONObject = JSONObject().apply {
-        put("schema", PRESET_SCHEMA); put("version", look.renderVersion); put("name", name); put("look", encode(look))
+        put("schema", PRESET_SCHEMA); put("version", PRESET_VERSION); put("name", name); put("look", encode(look))
+    }
+
+    fun decodePresetLook(json: JSONObject): ColorLookSettings {
+        require(json.optString("schema") in PRESET_SCHEMAS) { "请选择 .ptlook 预设，暂不支持 Lightroom XMP。" }
+        require((json.opt("version") as? Number)?.toDouble() == PRESET_VERSION.toDouble()) { "仅支持版本 $PRESET_VERSION 的调色预设" }
+        return decode(json.getJSONObject("look"))
     }
 
     fun decode(json: JSONObject): ColorLookSettings {
+        require((json.opt("renderVersion") as? Number)?.toDouble() == COLOR_LOOK_VERSION.toDouble()) { "仅支持版本 $COLOR_LOOK_VERSION 的编辑配方" }
         fun number(key: String, fallback: Float): Float {
             if (!json.has(key)) return fallback
             val value = json.get(key)
@@ -52,7 +58,6 @@ object LookCodec {
             strength = number("strength", 1f), exposure = number("exposure", 0f), contrast = number("contrast", 0f),
             saturation = number("saturation", 1f), warmth = number("warmth", 0f),
             usage = decodeUsage(json.getJSONObject("lutUsage")), logGainEv = number(if (json.has("logGainEv")) "logGainEv" else "nlogGainEv", 0f),
-            renderVersion = number("renderVersion", 1f).also { require(it == 1f || it == 2f) { "不支持此编辑配方版本" } }.toInt(),
             tint = number("tint", 0f),
             adjustments = if (json.has("adjustments")) ColorAdjustmentsCodec.decode(json.getJSONObject("adjustments")) else ColorAdjustments()
         ).also { it.validateParameters() }

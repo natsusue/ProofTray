@@ -1,29 +1,23 @@
 package org.prooftray.app.domain
 
 const val DEFAULT_LUT_STRENGTH = .5f
+internal const val COLOR_LOOK_VERSION = 2
 
 data class ColorLookSettings(
     val name: String = "原图", val lutId: String? = null, val strength: Float = 1f,
     val exposure: Float = 0f, val contrast: Float = 0f, val saturation: Float = 1f, val warmth: Float = 0f, val usage: LutUsage = LutUsage.direct,
     val logGainEv: Float = 0f, // Additional gain above the renderer's RAW exposure reference, not a camera calibration.
-    val renderVersion: Int = 2, val tint: Float = 0f, val adjustments: ColorAdjustments = ColorAdjustments()
+    val tint: Float = 0f, val adjustments: ColorAdjustments = ColorAdjustments()
 ) {
     val lutKey: String? get() = lutId?.let { "lut:$it:${usage.key}" }
     val usesLog get() = usage.input?.isLog == true
     fun withUsage(value: LutUsage) = copy(usage = value, logGainEv = if (value.input?.isLog == true) logGainEv else 0f)
-    // Legacy 0% disables the whole look. Version 2 keeps basic/display edits and disables only the LUT; K stays in the Log branch.
-    val isIdentity: Boolean get() = usage.unavailableReason == null && !usesLog && if (renderVersion == 1) {
-        strength == 0f || (lutId == null && exposure == 0f && contrast == 0f && saturation == 1f && warmth == 0f)
-    } else {
-        (lutId == null || strength == 0f) && exposure == 0f && contrast == 0f && saturation == 1f && warmth == 0f &&
-            tint == 0f && adjustments.isIdentity
-    }
-    fun parameters(): FloatArray = floatArrayOf(strength, exposure, contrast, saturation, warmth, renderVersion.toFloat(), tint)
-    fun withLut(choice: ColorLookSettings): ColorLookSettings = if (renderVersion == 1) choice else
-        copy(name = choice.name, lutId = choice.lutId, strength = choice.strength, usage = choice.usage,
-            logGainEv = if (choice.usesLog && usesLog) logGainEv else choice.logGainEv)
-    fun withoutLut(): ColorLookSettings = if (renderVersion == 1) ColorLookSettings() else
-        copy(name = "自定义", lutId = null, strength = 1f, usage = LutUsage.direct, logGainEv = 0f)
+    val isIdentity: Boolean get() = usage.unavailableReason == null && !usesLog && (lutId == null || strength == 0f) &&
+        exposure == 0f && contrast == 0f && saturation == 1f && warmth == 0f && tint == 0f && adjustments.isIdentity
+    fun parameters(): FloatArray = floatArrayOf(strength, exposure, contrast, saturation, warmth, COLOR_LOOK_VERSION.toFloat(), tint)
+    fun withLut(choice: ColorLookSettings): ColorLookSettings = copy(name = choice.name, lutId = choice.lutId,
+        strength = choice.strength, usage = choice.usage, logGainEv = if (choice.usesLog && usesLog) logGainEv else choice.logGainEv)
+    fun withoutLut(): ColorLookSettings = copy(name = "自定义", lutId = null, strength = 1f, usage = LutUsage.direct, logGainEv = 0f)
 
     /** The master curve follows the tonal controls. Each component curve also receives the result of the master curve. */
     internal fun curveInputLook(singleChannel: Boolean): ColorLookSettings = copy(name = "", saturation = 1f,
@@ -41,10 +35,8 @@ data class ColorLookSettings(
     }
 
     internal fun validateParameters() {
-        require(renderVersion in 1..2) { "不支持的编辑配方版本：$renderVersion" }
         require(tint.isFinite() && tint in -1f..1f) { "色调参数超出范围" }
         adjustments.validate()
-        require(renderVersion == 2 || (tint == 0f && adjustments == ColorAdjustments())) { "旧版配方不能包含高级调整" }
         require(logGainEv.isFinite() && logGainEv in -3f..3f) { "Log 输入增益超出范围" }
         require(!usesLog || lutId != null) { "请选择 Log LUT" }
         require(parameters().all(Float::isFinite)) { "调色参数必须为有限数值" }
@@ -65,6 +57,4 @@ data class LutAsset(val id: String, val name: String, val dimension: Int, val si
 }
 /** A look the user saved. There are no built-in presets; the editor offers "原图" (no look) on its own. */
 data class ColorPreset(val id: String, val name: String, val look: ColorLookSettings)
-data class LutPreviewData(
-    val id: String, val dimension: Int, val size: Int, val domainMin: FloatArray, val domainMax: FloatArray, val values: FloatArray
-)
+data class LutPreviewData(val id: String, val size: Int, val values: FloatArray)

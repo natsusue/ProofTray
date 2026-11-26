@@ -161,7 +161,7 @@ LogGrade PrepareLogGrade(LogRange range, float k, const ColorLook& look) {
   const float gain = k * std::exp2(look.exposure_ev), warm = std::exp2(look.warmth * .25f);
   const float tint = std::exp2(-look.tint * .25f), exposure = std::exp2(look.exposure_ev);
   return {GetLogEncoding(look.input_encoding), range, {gain * warm, gain * tint, gain / warm}, look.strength,
-          look.contrast, look.saturation, std::nullopt, look.output_encoding, look.render_version == 2,
+          std::nullopt, look.output_encoding,
           {exposure * warm, exposure * tint, exposure / warm}, DisplayAdjustmentsTable(look)};
 }
 
@@ -177,7 +177,7 @@ Rgb RenderLogPixel(const Rgb& linear_srgb, const ColorLut& lut, const LogGrade& 
   Rgb base{};
   if (grade.strength != 1) {
     auto input = linear_srgb;
-    if (grade.modern) for (int i = 0; i < 3; ++i) input[i] *= grade.base_gain[i];
+    for (int i = 0; i < 3; ++i) input[i] *= grade.base_gain[i];
     if (grade.base_render) base = RenderRawDefault(input, *grade.base_render);
     else for (int i = 0; i < 3; ++i) base[i] = ToSrgb(input[i]);
   }
@@ -185,23 +185,8 @@ Rgb RenderLogPixel(const Rgb& linear_srgb, const ColorLut& lut, const LogGrade& 
   auto graded = SampleLut(lut, EncodeLogPixel(linear_srgb, grade, grade.range));
   for (float& c : graded) {
     c = grade.output_encoding == LutEncoding::Direct ? std::clamp(c, 0.f, 1.f) : ToSrgb(std::pow(std::max(0.f, c), 2.4f));
-    if (!grade.modern) c = .5f + (c - .5f) * (1.f + grade.contrast);
   }
-  if (grade.modern) {
-    for (int i = 0; i < 3; ++i) base[i] = std::lerp(base[i], graded[i], grade.strength);
-    return grade.display_edits ? SampleLut(*grade.display_edits, base) : base;
-  }
-  const float luma = .2126f * graded[0] + .7152f * graded[1] + .0722f * graded[2];
-  for (size_t i = 0; i < base.size(); ++i) {
-    const float c = std::clamp(luma + (graded[i] - luma) * grade.saturation, 0.f, 1.f);
-    base[i] += grade.strength * (c - base[i]);
-  }
-  return base;
-}
-
-Rgb RenderNLogReference(const Rgb& linear_srgb, const ColorLut& lut, LogRange range, float k, float exposure_ev, float strength) {
-  static const auto& spec = GetLogEncoding(LutEncoding::NLog);
-  const float gain = k * std::exp2(exposure_ev);
-  return RenderLogPixel(linear_srgb, lut, {spec, range, {gain, gain, gain}, strength, 0.f, 1.f});
+  for (int i = 0; i < 3; ++i) base[i] = std::lerp(base[i], graded[i], grade.strength);
+  return grade.display_edits ? SampleLut(*grade.display_edits, base) : base;
 }
 }  // namespace prooftray

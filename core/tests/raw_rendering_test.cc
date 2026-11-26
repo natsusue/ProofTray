@@ -18,20 +18,20 @@ template <typename F> void Reject(F function) {
 
 void ReferenceVectors() {
   using namespace prooftray;
-  struct Vector { Rgb input; float baseline, exposure; Rgb expected; };
+  struct Vector { Rgb input; float baseline; Rgb expected; };
   // Independent double-precision fixtures from the pinned SDK SDR equations, including its negative-EV shoulder and D50 matrices.
   const Vector vectors[]{
-    {{0.081000000f, 0.081000000f, 0.081000000f}, 0.0f, 0.0f, {0.405069463f, 0.405069463f, 0.405069463f}},
-    {{0.180000000f, 0.180000000f, 0.180000000f}, 0.0f, 0.0f, {0.649354765f, 0.649354765f, 0.649354765f}},
-    {{0.040000000f, 0.080000000f, 0.300000000f}, 0.0f, 0.0f, {0.241790914f, 0.402396813f, 0.805107416f}},
-    {{0.040000000f, 0.080000000f, 0.300000000f}, 0.0f, 1.0f, {0.509864327f, 0.608805712f, 0.959310272f}},
-    {{0.040000000f, 0.080000000f, 0.300000000f}, 0.0f, -1.0f, {0.044260732f, 0.251908135f, 0.598471768f}},
-    {{0.040000000f, 0.080000000f, 0.300000000f}, 0.5f, 0.0f, {0.372979636f, 0.501392097f, 0.890498108f}},
-    {{-0.040000000f, 0.100000000f, 0.400000000f}, 0.0f, 0.0f, {0.000000000f, 0.446944043f, 0.880460628f}},
-    {{2.000000000f, 0.500000000f, 0.100000000f}, 0.0f, 0.0f, {1.000000000f, 0.833380533f, 0.600175541f}},
-    {{0.900000000f, 0.800000000f, 0.600000000f}, 0.0f, -3.0f, {0.994691624f, 0.927790923f, 0.770270852f}},
+    {{0.081000000f, 0.081000000f, 0.081000000f}, 0.0f, {0.405069463f, 0.405069463f, 0.405069463f}},
+    {{0.180000000f, 0.180000000f, 0.180000000f}, 0.0f, {0.649354765f, 0.649354765f, 0.649354765f}},
+    {{0.040000000f, 0.080000000f, 0.300000000f}, 0.0f, {0.241790914f, 0.402396813f, 0.805107416f}},
+    {{0.040000000f, 0.080000000f, 0.300000000f}, 1.0f, {0.509864327f, 0.608805712f, 0.959310272f}},
+    {{0.040000000f, 0.080000000f, 0.300000000f}, -1.0f, {0.044260732f, 0.251908135f, 0.598471768f}},
+    {{0.040000000f, 0.080000000f, 0.300000000f}, 0.5f, {0.372979636f, 0.501392097f, 0.890498108f}},
+    {{-0.040000000f, 0.100000000f, 0.400000000f}, 0.0f, {0.000000000f, 0.446944043f, 0.880460628f}},
+    {{2.000000000f, 0.500000000f, 0.100000000f}, 0.0f, {1.000000000f, 0.833380533f, 0.600175541f}},
+    {{0.900000000f, 0.800000000f, 0.600000000f}, -3.0f, {0.994691624f, 0.927790923f, 0.770270852f}},
   };
-  for (const auto& v : vectors) Near(RenderRawDefault(v.input, PrepareRawDefault({v.baseline}, v.exposure)), v.expected);
+  for (const auto& v : vectors) Near(RenderRawDefault(v.input, PrepareRawDefault({v.baseline})), v.expected);
   const auto standard = PrepareRawDefault();
   Near(RenderRawDefault({0, 0, 0}, standard), {0, 0, 0});
   Near(RenderRawDefault({1, 1, 1}, standard), {1, 1, 1});
@@ -48,7 +48,6 @@ void ReferenceVectors() {
   }
   const float nan = std::numeric_limits<float>::quiet_NaN();
   Reject([&] { PrepareRawDefault({nan}); });
-  Reject([&] { PrepareRawDefault({}, nan); });
   Reject([&] { PrepareRawDefault({17.f}); });
   Reject([&] { RenderRawDefault({nan, 0, 0}, standard); });
 }
@@ -59,29 +58,26 @@ void DisplayAndLogEndpoints() {
   ColorLook look;
   look.exposure_ev = 1;
   const Rgb raw{.04f, .06f, .08f};
-  const auto base = RenderRawDefault(raw, PrepareRawDefault(settings));
-  const auto exposed = RenderRawDefault(raw, PrepareRawDefault(settings, 1.f));
+  const Rgb linear_exposed{raw[0] * 2, raw[1] * 2, raw[2] * 2};
+  const auto exposed = RenderRawDefault(linear_exposed, PrepareRawDefault(settings));
   Near(RenderRawDisplayPixel(raw, nullptr, PrepareRawDisplayGrade(settings, look)), exposed);
   look.strength = 0;
-  Near(RenderRawDisplayPixel(raw, nullptr, PrepareRawDisplayGrade(settings, look)), base);
-  look.strength = .5f;
-  Rgb mixed{};
-  for (int i = 0; i < 3; ++i) mixed[i] = (base[i] + exposed[i]) / 2;
-  Near(RenderRawDisplayPixel(raw, nullptr, PrepareRawDisplayGrade(settings, look)), mixed);
+  Near(RenderRawDisplayPixel(raw, nullptr, PrepareRawDisplayGrade(settings, look)), exposed);
 
   const auto lut = ParseCube("LUT_1D_SIZE 2\n0 0 0\n1 1 1\n");
   look.input_encoding = LutEncoding::NLog;
   for (auto output : {LutEncoding::Direct, LutEncoding::Rec709Gamma24}) {
     look.output_encoding = output;
     look.strength = 0;
-    Near(RenderLogPixel(raw, lut, PrepareRawLogGrade(LogRange::Full10, 2.f, look, kGenericRawExposureReference, settings)), base);
+    Near(RenderLogPixel(raw, lut, PrepareRawLogGrade(LogRange::Full10, 2.f, look, kGenericRawExposureReference, settings)), exposed);
     look.strength = 1;
     const auto with_display_ev = PrepareRawLogGrade(LogRange::Full10, 2.f, look, kGenericRawExposureReference, settings);
     const auto without_display_ev = PrepareRawLogGrade(LogRange::Full10, 2.f, look);
     Near(RenderLogPixel(raw, lut, with_display_ev), RenderLogPixel(raw, lut, without_display_ev));
     const auto graded = RenderLogPixel(raw, lut, with_display_ev);
     look.strength = .5f;
-    for (int i = 0; i < 3; ++i) mixed[i] = (base[i] + graded[i]) / 2;
+    Rgb mixed{};
+    for (int i = 0; i < 3; ++i) mixed[i] = (exposed[i] + graded[i]) / 2;
     Near(RenderLogPixel(raw, lut, PrepareRawLogGrade(LogRange::Full10, 2.f, look, kGenericRawExposureReference, settings)), mixed);
   }
 }
