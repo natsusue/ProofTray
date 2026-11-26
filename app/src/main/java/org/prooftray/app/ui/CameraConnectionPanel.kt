@@ -67,7 +67,8 @@ internal fun CameraStatusCard(state: LibraryUiState, actions: LibraryActions, on
 
 @Composable
 internal fun CameraConnectionPage(
-    state: LibraryUiState, actions: LibraryActions, panel: CameraPanel?, onBrowse: () -> Unit, onRegister: () -> Unit, onDismiss: () -> Unit
+    state: LibraryUiState, actions: LibraryActions, panel: CameraPanel?, recoveryId: String?,
+    onBrowse: () -> Unit, onRegister: () -> Unit, onDismiss: () -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -77,7 +78,7 @@ internal fun CameraConnectionPage(
                     Text("相机连接", style = MaterialTheme.typography.titleLarge)
                 }
                 LibraryErrorNotice(state, actions)
-                CameraScreen(state, actions, onBrowse, onRegister, Modifier.weight(1f), panel)
+                CameraScreen(state, actions, onBrowse, onRegister, Modifier.weight(1f), panel, recoveryId)
             }
         }
     }

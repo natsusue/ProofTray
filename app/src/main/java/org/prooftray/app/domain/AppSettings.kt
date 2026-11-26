@@ -10,7 +10,8 @@ data class AppSettings(
     val requestedTimeSync: Boolean = true,
     val controlAddress: String = "", val transferAddress: String = "", val bluetoothRole: BluetoothRole = BluetoothRole.AUTOMATIC,
     val controlName: String = "", val sonySelected: Boolean = false, val sonyAddress: String = "", val sonyName: String = "",
-    val exportPreferences: ExportPreferences = ExportPreferences(), val controlSerial: String = ""
+    val exportPreferences: ExportPreferences = ExportPreferences(), val controlSerial: String = "",
+    val cameras: SavedCameras = SavedCameras()
 ) {
     val selectedAddress: String get() = if (sonySelected) sonyAddress else controlAddress
     val selectedName: String get() = if (sonySelected) sonyName else controlName

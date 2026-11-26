@@ -25,16 +25,18 @@ internal class CameraLocationRouter(
         target = null
         previous?.clear()
         val selected = settings.state.value
+        val generation = camera.value.generation
         fun selectionCurrent(): Boolean {
             val latest = settings.state.value
             if (!latest.locationSync || camera.value.manuallyDisconnected || (latest.sonySelected && sonyStopped)) return false
-            return latest.sonySelected == selected.sonySelected && latest.selectedAddress == selected.selectedAddress
+            return generation == camera.value.generation && latest.cameras.selectedId == selected.cameras.selectedId &&
+                latest.sonySelected == selected.sonySelected && latest.selectedAddress == selected.selectedAddress
         }
         if (!selectionCurrent()) return@withLock null
         val channel = if (selected.sonySelected) {
             check(selected.sonyAddress.isNotBlank()) { "请先添加索尼相机" }
             // Opening the location service only uses bonded BLE; it never requests a hotspot or a Wi-Fi session.
-            SonyLocationChannel(owner, sony, sony.location(selected.sonyAddress), ::selectionCurrent)
+            SonyLocationChannel(owner, sony, sony.location(selected.sonyAddress, ::selectionCurrent), ::selectionCurrent)
         } else {
             val bleSession = ble.locationSession()
             val wifi = wifiSession()

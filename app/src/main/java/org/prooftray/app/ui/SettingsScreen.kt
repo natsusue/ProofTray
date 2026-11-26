@@ -24,6 +24,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -49,7 +50,8 @@ private enum class SettingsSection(val title: String, val glyph: AppGlyph) {
 }
 
 @Composable
-fun SettingsScreen(state: LibraryUiState, actions: LibraryActions, onCamera: () -> Unit, onAbout: () -> Unit, onManage: () -> Unit) {
+fun SettingsScreen(state: LibraryUiState, actions: LibraryActions, onCamera: () -> Unit, onAdd: (String?) -> Unit,
+                   onTasks: () -> Unit, onAbout: () -> Unit, onManage: () -> Unit) {
     var section by rememberSaveable { mutableStateOf<SettingsSection?>(null) }
     val settings = state.settings
     val autoKind = if (settings.sonySelected && settings.autoKind == AutoDownloadKind.CAMERA_JPEG) AutoDownloadKind.JPEG else settings.autoKind
@@ -59,7 +61,8 @@ fun SettingsScreen(state: LibraryUiState, actions: LibraryActions, onCamera: () 
         SettingsSection.entries.forEach { option ->
             item(key = option.name) {
                 val value = when (option) {
-                    SettingsSection.DEVICES -> settings.selectedName.takeIf { it.isNotBlank() }?.let { "$it · $connection" } ?: "未添加"
+                    SettingsSection.DEVICES -> settings.cameras.selected?.let { "${it.title} · $connection" }
+                        ?: stringResource(R.string.camera_count, settings.cameras.devices.size)
                     SettingsSection.AUTO -> if (settings.automaticEnabled) autoKind.label() else "关闭"
                     SettingsSection.IMPORT -> settings.effectiveManualVariant.label()
                     SettingsSection.LOCATION -> if (settings.locationSync) "开启" else "关闭"
@@ -80,7 +83,8 @@ fun SettingsScreen(state: LibraryUiState, actions: LibraryActions, onCamera: () 
         AppSheet(selected.title, dismiss, actions = { TextButton(onClick = dismiss) { Text("完成") } }, compact = true) {
             LibraryErrorNotice(state, actions)
             when (selected) {
-                SettingsSection.DEVICES -> DevicesSettings(state, actions, manageCamera)
+                SettingsSection.DEVICES -> DevicesSettings(state, actions, manageCamera,
+                    onAdd = { dismiss(); onAdd(it) }, onTasks = { dismiss(); onTasks() })
                 SettingsSection.AUTO -> {
                     SettingSwitch("自动导入", settings.automaticEnabled) { enabled ->
                         if (enabled && autoKind != settings.autoKind) actions.onSetAutoKind(autoKind)
@@ -170,25 +174,33 @@ private fun SettingsRow(title: String, glyph: AppGlyph, value: String? = null, o
 }
 
 @Composable
-private fun DevicesSettings(state: LibraryUiState, actions: LibraryActions, onCamera: () -> Unit) {
+private fun DevicesSettings(state: LibraryUiState, actions: LibraryActions, onCamera: () -> Unit,
+                            onAdd: (String?) -> Unit, onTasks: () -> Unit) {
     var advanced by rememberSaveable { mutableStateOf(false) }
-    val saved = state.settings.selectedAddress.isNotBlank()
+    val connection = state.cameraChangeContext()
+    var transferChange by remember(connection) { mutableStateOf<BleCamera?>(null) }
+    SavedCameraList(state, actions, onAdd, onTasks)
     val devices = (state.ble.cameras + state.pairedDevices).filter { it.make != CameraMake.SONY }.distinctBy { it.address }
-    Text(state.settings.selectedName.ifBlank { "尚未添加相机" }, style = MaterialTheme.typography.titleMedium)
-    TextButton(onClick = onCamera) { Text(if (saved) "管理连接" else "添加相机") }
-    if (state.settings.sonySelected) {
-        TextButton(onClick = { actions.onChooseControlDevice("") }) { Text("移除索尼相机关联") }
-        return
-    }
+    TextButton(onClick = onCamera) { Text("管理连接") }
+    if (state.settings.cameras.readError) return
     TextButton(onClick = { advanced = !advanced }) { Text(if (advanced) "收起高级设置" else "高级设置") }
     AnimatedVisibility(advanced) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = actions.onRefreshPairedDevices) { Text("读取系统配对设备") }
+            DeviceChoices("尼康蓝牙控制设备", devices, state.settings.controlAddress, actions.onChooseControlDevice)
+            if (state.settings.sonySelected) return@Column
             SettingSwitch("配对时同步时间", state.settings.pairingTimeSync, actions.onSetPairingTimeSync)
             Text("配对时主动同步；相机请求时的同步看下面的开关", style = MaterialTheme.typography.bodySmall)
             SettingSwitch("相机请求时同步时间", state.settings.requestedTimeSync, actions.onSetRequestedTimeSync)
-            TextButton(onClick = actions.onRefreshPairedDevices) { Text("读取系统配对设备") }
-            DeviceChoices("蓝牙控制设备", devices, state.settings.controlAddress, actions.onChooseControlDevice)
-            DeviceChoices("蓝牙传图设备", state.pairedDevices.filter { it.classic }, state.settings.transferAddress, actions.onChooseTransferDevice)
+            val classic = state.pairedDevices.filter { it.classic }
+            DeviceChoices("蓝牙传图设备", classic, state.settings.transferAddress) { address ->
+                val registry = state.settings.cameras
+                val id = registry.selectedId
+                val validChange = id != null && runCatching { registry.chooseTransferDevice(id, address) }
+                    .getOrNull()?.let { it != registry } == true
+                if (validChange && connection.hasLiveConnection) transferChange = classic.find { it.address == address }
+                else actions.onChooseTransferDevice(address, connection, null)
+            }
             Text("连接方向", style = MaterialTheme.typography.labelLarge)
             ChoiceRow(BluetoothRole.entries, state.settings.bluetoothRole, { when (it) {
                 BluetoothRole.AUTOMATIC -> "自动"
@@ -199,9 +211,12 @@ private fun DevicesSettings(state: LibraryUiState, actions: LibraryActions, onCa
             if (state.ble.serialNumber.isNotBlank()) Text("机身序列号：${state.ble.serialNumber}", style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = actions.onOpenBluetoothSettings) { Text("系统蓝牙设置") }
             TextButton(onClick = actions.onDisconnectControl) { Text("断开蓝牙") }
-            TextButton(onClick = { actions.onChooseControlDevice(""); actions.onChooseTransferDevice("") }, enabled = saved) {
-                Text("清除应用关联（保留系统配对）")
-            }
+        }
+    }
+    transferChange?.let { device ->
+        CameraChangeDialog(stringResource(R.string.camera_change_transfer, device.name), { transferChange = null }) {
+            transferChange = null
+            actions.onChooseTransferDevice(device.address, connection, connection)
         }
     }
 }

@@ -11,6 +11,8 @@ internal fun CameraState.disconnected(nextGeneration: Int, reason: String? = nul
     connected = false, connecting = false, busy = false, transmissionPaused = false, generation = nextGeneration,
     connectionPhase = if (reason == null) ConnectionPhase.IDLE else ConnectionPhase.FAILED,
     stage = if (reason == null) "相机未连接" else "连接已断开", message = reason, pairingCode = null,
+    accessRequest = null, attemptId = null, connectedId = null, controlAttempt = null, failedChannel = SavedCameraChannel.WIFI,
+    failedId = if (reason != null) attemptId ?: connectedId else null, deviceError = reason,
     sourceId = "", hasMore = false, catalogIds = emptySet(), catalogError = null, catalogStopped = false,
     catalogDates = emptyList(), catalogStartDay = null, make = CameraMake.OTHER, pairingTarget = null,
     protocolDiagnostic = if (reason == null) null else protocolDiagnostic

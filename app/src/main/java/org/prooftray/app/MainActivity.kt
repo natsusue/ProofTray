@@ -107,9 +107,9 @@ class MainActivity : ComponentActivity() {
                         exports = TaskQueueActions(model::pauseExports, model::retryTask, model::cancelTask, model::clearExportHistory),
                         onOpenOutput = { openOutput(Uri.parse(it), model) }),
                     onDismissError = model::dismissError,
-                    onConnectCamera = { config ->
+                    onConnectCamera = { config, approval ->
                         access.withPermissions(state.settings.sonySelected && !config.sonyCamera, wifi = true) {
-                            access.withPhoneWifi { model.camera.connect(config) }
+                            access.withPhoneWifi { model.camera.connect(config, approval) }
                         }
                     },
                     onDisconnectCamera = model::disconnectCamera,
@@ -127,11 +127,22 @@ class MainActivity : ComponentActivity() {
                     onDiscoverCamera = { access.withPermissions(false) { model.camera.discoverSta() } },
                     onOpenWifi = access::openWifiPanel,
                     onScanBle = { access.withPermissions(true, scanning = true) { model.camera.scanBle() } },
-                    onConnectBle = { camera -> access.withPermissions(true, scanning = true) { model.camera.connectBle(camera) } },
+                    onConnectBle = { camera, approval, recoveryId ->
+                        access.withPermissions(true, scanning = true) { model.camera.connectBle(camera, approval, recoveryId) }
+                    },
                     onDiscoverClassic = { access.withPermissions(true, scanning = true) { model.camera.discoverClassic() } },
                     onStopBleScan = model.camera::stopBleScan,
                     onWakeWifi = access::switchToCameraWifi,
-                    onSwitchToBluetooth = { access.withPermissions(true, scanning = true) { model.camera.switchToNikonBluetooth() } },
+                    onConnectSavedCamera = access::connectSavedCamera,
+                    onDisconnectSavedControl = { id -> runCatching { model.camera.disconnectSavedControl(id) }
+                        .onFailure { model.showError(it.message ?: "无法断开蓝牙控制") } },
+                    onDisconnectSavedCamera = { id -> runCatching { model.camera.disconnectSavedCamera(id) }
+                        .onFailure { model.showError(it.message ?: "无法断开相机") } },
+                    onRemoveSavedCamera = { id -> runCatching { model.camera.removeSavedCamera(id) }
+                        .onFailure { model.showError(it.message ?: "无法移除相机关联") } },
+                    onSwitchToBluetooth = { approval ->
+                        access.withPermissions(true, scanning = true) { model.camera.switchToNikonBluetooth(approval) }
+                    },
                     onDownloadSelection = model::downloadSelection,
                     onDownloadPhoto = model::downloadPhoto,
                     onRequestPreview = model.camera::requestPreview,

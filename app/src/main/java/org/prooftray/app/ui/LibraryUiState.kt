@@ -21,6 +21,10 @@ import org.prooftray.app.camera.BleState
 import org.prooftray.app.camera.CameraConnection
 import org.prooftray.app.camera.CameraEndpoint
 import org.prooftray.app.camera.CameraState
+import org.prooftray.app.camera.SavedCameraChannel
+import org.prooftray.app.camera.CameraChangeContext
+import org.prooftray.app.camera.changeContext
+
 import org.prooftray.app.camera.SonyCaptureDay
 import org.prooftray.app.camera.AutoDownloadState
 import org.prooftray.app.camera.LocationSyncState
@@ -29,6 +33,8 @@ import org.prooftray.app.domain.PowerProfile
 import org.prooftray.app.domain.BluetoothRole
 import org.prooftray.app.domain.AutoDownloadKind
 import org.prooftray.app.domain.DownloadVariant
+
+internal fun LibraryUiState.cameraChangeContext() = camera.changeContext(ble, settings.cameras.selectedId)
 
 data class LibraryUiState(
     val assets: List<PhotoAsset> = emptyList(),
@@ -87,7 +93,7 @@ data class LibraryActions(
     val onExportPhotos: (Set<String>, ExportOptions) -> Unit,
     val transfers: TransferScreenActions,
     val onDismissError: () -> Unit,
-    val onConnectCamera: (CameraConnection) -> Unit,
+    val onConnectCamera: (CameraConnection, CameraChangeContext?) -> Unit,
     val onDisconnectCamera: () -> Unit,
     val onDisconnectWifi: () -> Unit,
     val onRetryConnection: () -> Unit,
@@ -96,10 +102,14 @@ data class LibraryActions(
     val onOpenWifi: () -> Unit,
     val onScanBle: () -> Unit,
     val onStopBleScan: () -> Unit,
-    val onConnectBle: (BleCamera) -> Unit,
+    val onConnectBle: (BleCamera, CameraChangeContext?, String?) -> Unit,
     val onDiscoverClassic: () -> Unit,
     val onWakeWifi: () -> Unit,
-    val onSwitchToBluetooth: () -> Unit,
+    val onConnectSavedCamera: (String, CameraChangeContext?, SavedCameraChannel) -> Unit,
+    val onDisconnectSavedControl: (String) -> Unit,
+    val onDisconnectSavedCamera: (String) -> Unit,
+    val onRemoveSavedCamera: (String) -> Unit,
+    val onSwitchToBluetooth: (CameraChangeContext?) -> Unit,
     val onDownloadSelection: () -> Unit,
     val onDownloadPhoto: (String) -> Unit,
     val onRequestPreview: (String, Boolean) -> (() -> Unit),
@@ -145,7 +155,7 @@ data class LibraryActions(
     val onSetRequestedTimeSync: (Boolean) -> Unit,
     val onRefreshPairedDevices: () -> Unit,
     val onChooseControlDevice: (String) -> Unit,
-    val onChooseTransferDevice: (String) -> Unit,
+    val onChooseTransferDevice: (String, CameraChangeContext, CameraChangeContext?) -> Unit,
     val onSetBluetoothRole: (BluetoothRole) -> Unit,
     val onDisconnectControl: () -> Unit,
     val onCheckBluetoothTransfers: () -> Unit,

@@ -2,4 +2,37 @@
 <resources>
     <string name="app_name" translatable="false">ProofTray</string>
     <string name="app_tagline">从相机到作品</string>
+    <string name="camera_count">%1$d 台已保存相机</string>
+    <string name="saved_cameras">已配对相机</string>
+    <string name="no_saved_cameras">尚未添加相机</string>
+    <string name="camera_add">添加相机</string>
+    <string name="camera_registry_damaged">设备列表无法完整读取，已保留原记录。请恢复备份或使用支持该版本的应用。</string>
+    <string name="camera_legacy">旧版相机关联 · 待确认</string>
+    <string name="camera_confirm_legacy">重新确认相机</string>
+    <string name="camera_ble_ready">蓝牙控制已连接</string>
+    <string name="camera_ble_off">蓝牙控制未连接</string>
+    <string name="camera_wifi_ready">Wi-Fi 原片通道已连接</string>
+    <string name="camera_wifi_off">Wi-Fi 原片通道未连接</string>
+    <string name="camera_wait_access">等待权限或手机 Wi-Fi</string>
+    <string name="camera_switch">切换相机</string>
+    <string name="camera_switch_detail">断开当前相机并连接 %1$s？</string>
+    <string name="camera_confirm_change">确认</string>
+    <string name="camera_rebind">请在机身核对所选 %1$s。确认用这台机身恢复旧关联「%2$s」？</string>
+    <string name="camera_switch_rebind">断开当前相机，并在核对机身后用 %1$s 恢复旧关联「%2$s」？</string>
+    <string name="camera_change_transfer">断开当前相机并将经典蓝牙传图设备改为 %1$s？新关联需要重新确认。</string>
+    <string name="camera_replace_wifi">断开当前 Wi-Fi 原片通道并建立新的手动连接？</string>
+    <string name="camera_remove">移除应用关联</string>
+    <string name="camera_remove_detail">从 ProofTray 移除 %1$s？手机系统配对和导入的照片将保留。</string>
+    <string name="camera_menu">管理 %1$s</string>
+    <string name="camera_cancel">取消</string>
+    <string name="camera_connect_wifi">连接相机 Wi-Fi</string>
+    <string name="camera_retry_wifi">重试连接</string>
+    <string name="camera_disconnect_wifi">断开相机 Wi-Fi</string>
+    <string name="camera_busy">正在传输或检查照片，请在结束后切换相机。</string>
+    <string name="camera_tasks">查看传输任务</string>
+    <string name="camera_connect_ble">连接相机蓝牙</string>
+    <string name="camera_disconnect_ble">断开相机蓝牙</string>
+    <string name="camera_cancel_ble">取消蓝牙连接</string>
+    <string name="camera_connecting_ble">正在连接蓝牙控制</string>
+    <string name="camera_wait_ble_permission">等待蓝牙权限</string>
 </resources>

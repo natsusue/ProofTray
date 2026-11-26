@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.DropdownMenu
@@ -29,30 +30,39 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import org.prooftray.app.camera.CameraConnection
+import org.prooftray.app.camera.BleCamera
 import org.prooftray.app.camera.CameraMake
 import org.prooftray.app.camera.CameraMode
 import org.prooftray.app.camera.ConnectionPhase
 import org.prooftray.app.camera.SonyAccess
+import org.prooftray.app.domain.CameraBrand
+import org.prooftray.app.R
 
 internal enum class CameraPanel { SEARCH, MANUAL, DIAGNOSTICS }
 
 @Composable
 internal fun CameraScreen(
     state: LibraryUiState, actions: LibraryActions, onBrowse: () -> Unit, onRegister: () -> Unit,
-    modifier: Modifier = Modifier, initialPanel: CameraPanel? = null
+    modifier: Modifier = Modifier, initialPanel: CameraPanel? = null, recoveryId: String? = null
 ) {
     var panel by rememberSaveable { mutableStateOf(initialPanel) }
     var manualMode by rememberSaveable { mutableStateOf(CameraMode.AP) }
     var menu by remember { mutableStateOf(false) }
+    val connection = state.cameraChangeContext()
+    val recovery = state.settings.cameras.devices.find { it.id == recoveryId && it.pending }
+    var pairingChoice by remember(connection, recovery) { mutableStateOf<BleCamera?>(null) }
+    var switchToBluetooth by remember(connection) { mutableStateOf(false) }
     fun openPanel(next: CameraPanel?) {
         menu = false
         if (panel == CameraPanel.SEARCH && next != panel) actions.onStopBleScan()
@@ -152,7 +162,15 @@ internal fun CameraScreen(
                     } else {
                         val enabled = !state.camera.connecting && !state.ble.pairingInProgress &&
                             (!state.ble.adapterEnabled || canSwitchBluetooth)
-                        OutlinedButton(onClick = if (state.ble.adapterEnabled) actions.onSwitchToBluetooth else actions.onOpenBluetoothSettings,
+                        OutlinedButton(onClick = {
+                            val target = state.settings.cameras.selected
+                            when {
+                                !state.ble.adapterEnabled -> actions.onOpenBluetoothSettings()
+                                target != null && connection.switchesDevice(target.id, CameraMake.NIKON, target.address) ->
+                                    switchToBluetooth = true
+                                else -> actions.onSwitchToBluetooth(null)
+                            }
+                        },
                             enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text(label) }
                         if (!enabled) Text("等待当前连接操作完成", style = MaterialTheme.typography.bodySmall)
                     }
@@ -174,10 +192,25 @@ internal fun CameraScreen(
                     if (state.ble.scanning) LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text(state.ble.message, style = MaterialTheme.typography.bodySmall)
                     if (!state.ble.scanning && state.ble.cameras.isEmpty()) Text("未发现相机")
-                    state.ble.cameras.forEach { camera ->
-                        OutlinedButton(onClick = { panel = null; actions.onConnectBle(camera) },
-                            enabled = camera.pairingAvailable && !summary.busy && !state.camera.connected, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (camera.pairingAvailable) camera.name else "${camera.name} · 请在机身打开「智能手机连接」")
+                    state.ble.cameras.filter {
+                        val brand = if (it.make == CameraMake.SONY) CameraBrand.SONY else CameraBrand.NIKON
+                        recoveryId == null || recovery?.brand == brand
+                    }.forEach { camera ->
+                        key(camera.address) {
+                            OutlinedButton(onClick = {
+                                val brand = if (camera.make == CameraMake.SONY) CameraBrand.SONY else CameraBrand.NIKON
+                                val id = state.settings.cameras.devices.find {
+                                    it.brand == brand && it.address.equals(camera.address, true)
+                                }?.id
+                                if (recoveryId != null || connection.switchesDevice(id, camera.make, camera.address)) pairingChoice = camera
+                                else {
+                                    panel = null
+                                    actions.onConnectBle(camera, null, null)
+                                }
+                            },
+                                enabled = camera.pairingAvailable && !summary.busy && !state.camera.connected, modifier = Modifier.fillMaxWidth()) {
+                                Text(if (camera.pairingAvailable) camera.name else "${camera.name} · 请在机身打开「智能手机连接」")
+                            }
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -228,7 +261,32 @@ internal fun CameraScreen(
             TextButton(onClick = { openPanel(null) }) { Text("收起") }
         }
     }
+    pairingChoice?.let { target ->
+        val message = if (recovery != null) {
+            val id = state.settings.cameras.devices.find { it.address.equals(target.address, true) }?.id
+            stringResource(if (connection.switchesDevice(id, target.make, target.address))
+                R.string.camera_switch_rebind else R.string.camera_rebind, target.name, recovery.title)
+        } else stringResource(R.string.camera_switch_detail, target.name)
+        CameraChangeDialog(message, { pairingChoice = null }) {
+            pairingChoice = null
+            panel = null
+            actions.onConnectBle(target, connection, recoveryId)
+        }
+    }
+    if (switchToBluetooth) {
+        val message = stringResource(R.string.camera_switch_detail, state.settings.selectedName)
+        CameraChangeDialog(message, { switchToBluetooth = false }) {
+            switchToBluetooth = false
+            actions.onSwitchToBluetooth(connection)
+        }
+    }
+}
 
+@Composable
+internal fun CameraChangeDialog(message: String, dismiss: () -> Unit, confirm: () -> Unit) {
+    AlertDialog(onDismissRequest = dismiss, text = { Text(message) },
+        confirmButton = { TextButton(onClick = confirm) { Text(stringResource(R.string.camera_confirm_change)) } },
+        dismissButton = { TextButton(onClick = dismiss) { Text(stringResource(R.string.camera_cancel)) } })
 }
 
 @Composable
@@ -262,6 +320,8 @@ private fun ManualConnection(state: LibraryUiState, actions: LibraryActions, vis
     val host = if (mode == CameraMode.AP) apHost else staHost
     val portNumber = port.toIntOrNull()
     val enabled = !state.camera.connecting && !state.ble.pairingInProgress
+    val connection = state.cameraChangeContext()
+    var replaceWifi by remember(connection, visible) { mutableStateOf<CameraConnection?>(null) }
     AnimatedVisibility(visible) {
         SectionCard("手动连接", glyph = AppGlyph.WIFI) {
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -318,12 +378,21 @@ private fun ManualConnection(state: LibraryUiState, actions: LibraryActions, vis
             }
             PrimaryAction("连接", onClick = {
                 val discoveredSony = mode == CameraMode.STA && discoveredSonyHost.isNotBlank() && host == discoveredSonyHost
-                if (portNumber != null) actions.onConnectCamera(CameraConnection(mode, host, portNumber,
-                    if (mode == CameraMode.AP) ssid else "", if (mode == CameraMode.AP) password else "",
-                    sonyAccess = access, sonyCamera = manualAuth || (discoveredSony && !state.settings.sonySelected)))
+                if (portNumber != null) {
+                    val config = CameraConnection(mode, host, portNumber,
+                        if (mode == CameraMode.AP) ssid else "", if (mode == CameraMode.AP) password else "",
+                        sonyAccess = access, sonyCamera = manualAuth || (discoveredSony && !state.settings.sonySelected))
+                    if (connection.wifi) replaceWifi = config else actions.onConnectCamera(config, null)
+                }
                 if (manualAuth) secret = ""
             }, modifier = Modifier.fillMaxWidth(), enabled = enabled && portNumber != null && portNumber in 1..65535 &&
                 (!manualAuth || access != null) && (mode == CameraMode.AP || host.isNotBlank()), glyph = AppGlyph.CAMERA)
+        }
+    }
+    replaceWifi?.let { config ->
+        CameraChangeDialog(stringResource(R.string.camera_replace_wifi), { replaceWifi = null }) {
+            replaceWifi = null
+            actions.onConnectCamera(config, connection)
         }
     }
 }

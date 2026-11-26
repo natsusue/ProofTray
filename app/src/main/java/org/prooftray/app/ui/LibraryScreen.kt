@@ -87,9 +87,14 @@ private fun LibraryContent(state: LibraryUiState, actions: LibraryActions, showA
     var showingSavedFilters by remember { mutableStateOf(false) }
     val exportIds = state.exportIds
     var showingCamera by rememberSaveable { mutableStateOf(false) }
-    var cameraPanel by remember { mutableStateOf<CameraPanel?>(null) }
+    var cameraPanel by rememberSaveable { mutableStateOf<CameraPanel?>(null) }
+    var cameraRecoveryId by rememberSaveable { mutableStateOf<String?>(null) }
     var registering by rememberSaveable { mutableStateOf(false) }
-    fun openCamera(panel: CameraPanel? = null) { cameraPanel = panel; showingCamera = true }
+    fun openCamera(panel: CameraPanel? = null, recoveryId: String? = null) {
+        cameraPanel = panel
+        cameraRecoveryId = recoveryId
+        showingCamera = true
+    }
     val view = LocalView.current
     val connectionBusy = cameraConnectionSummary(state).busy
     DisposableEffect(view, connectionBusy) {
@@ -283,10 +288,11 @@ private fun LibraryContent(state: LibraryUiState, actions: LibraryActions, showA
                 when (page) {
                     MainTab.LIBRARY, MainTab.IMPORT -> PhotoBrowserScreen(state, actions, selecting, originalOf,
                         onLibrarySection = { browseLibrary(it) },
-                        onCamera = ::openCamera, onRegister = { registering = true }, onFilters = { showingFilters = true },
+                        onCamera = { openCamera(it) }, onRegister = { registering = true }, onFilters = { showingFilters = true },
                         onExpand = { expandedGroupId = it }, onPreview = { previewId = it })
                     MainTab.TASKS -> TransferScreen(state.transferState(), actions.transfers, taskExports) { taskExports = it }
                     MainTab.SETTINGS -> SettingsScreen(state, actions, onCamera = { openCamera() },
+                        onAdd = { openCamera(CameraPanel.SEARCH, it) }, onTasks = { taskExports = false; navigate(MainTab.TASKS) },
                         onAbout = { showingAbout = true }, onManage = { showingColorLibrary = true })
                 }
             }
@@ -349,7 +355,7 @@ private fun LibraryContent(state: LibraryUiState, actions: LibraryActions, showA
             GroupDialog(group, state.selectedIds, actions.onToggleSelection, originalOf, onPreview = { previewId = it }) { expandedGroupId = null }
         }
     }
-    if (showingCamera) CameraConnectionPage(state, actions, cameraPanel,
+    if (showingCamera) CameraConnectionPage(state, actions, cameraPanel, cameraRecoveryId,
         onBrowse = { showingCamera = false; navigate(MainTab.IMPORT) }, onRegister = { registering = true },
         onDismiss = { showingCamera = false; actions.onStopBleScan() })
     CameraRegistrationDialogs(state, actions, registering) { registering = false }

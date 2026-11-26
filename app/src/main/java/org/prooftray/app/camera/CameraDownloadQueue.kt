@@ -42,7 +42,8 @@ internal interface DownloadSource {
 /** Persistent import queue: Wi-Fi originals and portable JPEGs, Bluetooth JPEG copies, cancellation and retry. */
 internal class CameraDownloadQueue(
     private val context: Context, private val scope: CoroutineScope, private val state: MutableStateFlow<CameraState>,
-    private val requests: Mutex, private val source: DownloadSource, private val published: suspend () -> Unit
+    private val requests: Mutex, private val transfers: CameraTransferGate, private val source: DownloadSource,
+    private val published: suspend () -> Unit
 ) {
     private val repository = PhotoRepository.get(context)
     private val gallery = GalleryPublisher(context)
@@ -74,6 +75,16 @@ internal class CameraDownloadQueue(
 
     fun wake() { signals.trySend(Unit) }
 
+    fun sessionEnded(sourceId: String) {
+        scope.launch {
+            withTasks { tasks ->
+                if (state.value.connected && state.value.sourceId == sourceId) return@withTasks
+                val waiting = tasks.map { it.waitAfterDisconnect(sourceId) }
+                if (waiting != tasks) saveTasks(waiting)
+            }
+        }
+    }
+
     fun pause(paused: Boolean) {
         state.update { it.copy(paused = paused) }
         if (!paused) wake()
@@ -86,12 +97,18 @@ internal class CameraDownloadQueue(
     }
 
     suspend fun enqueue(photos: List<RemotePhoto>, variant: DownloadVariant, automatic: Boolean) {
-        val added = withTasks { tasks ->
-            val open = tasks.filter { it.pending }.mapTo(hashSetOf()) { it.photo.asset.id to it.variant }
-            val fresh = photos.filter { open.add(it.asset.id to variant) }
-                .map { CameraDownload(UUID.randomUUID().toString(), it, variant = variant, automatic = automatic) }
-            if (fresh.isNotEmpty()) saveTasks(tasks + fresh)
-            fresh
+        val added = transfers.transfer {
+            withTasks { tasks ->
+                val session = state.value
+                check(session.connected && !session.connecting && photos.all { it.cameraIdentity == session.sourceId }) {
+                    "相机会话已变化，请返回原机重新选择照片"
+                }
+                val open = tasks.filter { it.pending }.mapTo(hashSetOf()) { it.photo.asset.id to it.variant }
+                val fresh = photos.filter { open.add(it.asset.id to variant) }
+                    .map { CameraDownload(UUID.randomUUID().toString(), it, variant = variant, automatic = automatic) }
+                if (fresh.isNotEmpty()) saveTasks(tasks + fresh)
+                fresh
+            }
         }
         try {
             val queued = if (variant == DownloadVariant.ORIGINAL) DownloadState.QUEUED else DownloadState.REMOTE
@@ -138,34 +155,40 @@ internal class CameraDownloadQueue(
         }
     }
 
-    fun retry(id: String, retryBluetooth: () -> Unit) {
+    fun retry(id: String, retryBluetooth: (String) -> Unit) {
+        val generation = state.value.generation
         scope.launch {
-            val task = withTasks { tasks -> tasks.find { it.id == id } } ?: return@launch
-            check(task.status == DownloadStatus.WAITING || task.status == DownloadStatus.CANCELLED) { "只有中断或取消的任务可以重试" }
-            if (task.status == DownloadStatus.CANCELLED) {
-                if (!removeOutput(task.outputUri)) {
-                    updateTask(id) { it.copy(message = "请先清理上次的未完成副本") }
-                    return@launch
-                }
-                cancelled -= id
-                updateTask(id) { it.copy(status = DownloadStatus.WAITING, outputUri = null, received = 0, payloadBytes = 0) }
-            }
-            if (task.channel == DownloadChannel.BLUETOOTH) {
-                retryBluetooth()
-                return@launch
-            }
-            val identity = source.identity
-            val current = source.photo(task.photo.asset.id)
-            if (!state.value.connected || current == null || current.cameraIdentity != identity || task.photo.cameraIdentity != identity) {
-                val message = if (state.value.connected) "请刷新导入列表；若照片已重新编目，请重新选择原片导入"
-                    else "请连接原来的相机，刷新导入列表后重试"
-                updateTask(id) { it.copy(status = DownloadStatus.WAITING, message = message) }
-                return@launch
+            transfers.transfer { retryTask(id, generation, retryBluetooth) }
+        }
+    }
+
+    private suspend fun retryTask(id: String, generation: Int, retryBluetooth: (String) -> Unit) {
+        if (state.value.generation != generation || state.value.connecting) return
+        val task = withTasks { tasks -> tasks.find { it.id == id } } ?: return
+        check(task.status == DownloadStatus.WAITING || task.status == DownloadStatus.CANCELLED) { "只有中断或取消的任务可以重试" }
+        if (task.status == DownloadStatus.CANCELLED) {
+            if (!removeOutput(task.outputUri)) {
+                updateTask(id) { it.copy(message = "请先清理上次的未完成副本") }
+                return
             }
             cancelled -= id
-            updateTask(id) { it.copy(photo = current, status = DownloadStatus.QUEUED, message = "等待重试") }
-            wake()
+            updateTask(id) { it.copy(status = DownloadStatus.WAITING, outputUri = null, received = 0, payloadBytes = 0) }
         }
+        if (task.channel == DownloadChannel.BLUETOOTH) {
+            retryBluetooth(task.photo.cameraIdentity)
+            return
+        }
+        val identity = source.identity
+        val current = source.photo(task.photo.asset.id)
+        if (!state.value.connected || current == null || current.cameraIdentity != identity || task.photo.cameraIdentity != identity) {
+            val message = if (state.value.connected) "请刷新导入列表；若照片已重新编目，请重新选择原片导入"
+                else "请连接原来的相机，刷新导入列表后重试"
+            updateTask(id) { it.copy(status = DownloadStatus.WAITING, message = message) }
+            return
+        }
+        cancelled -= id
+        updateTask(id) { it.copy(photo = current, status = DownloadStatus.QUEUED, message = "等待重试") }
+        wake()
     }
 
     suspend fun receiveBluetooth(photo: RemotePhoto, bytes: () -> ByteArray) {
@@ -173,7 +196,7 @@ internal class CameraDownloadQueue(
             val previous = tasks.firstOrNull {
                 val sameFile = it.photo.asset.id == photo.asset.id ||
                     (photo.asset.cameraFileKey != null && it.photo.asset.cameraFileKey == photo.asset.cameraFileKey)
-                it.channel == DownloadChannel.BLUETOOTH && sameFile && it.status == DownloadStatus.WAITING
+                it.channel == DownloadChannel.BLUETOOTH && sameFile && it.photo.cameraIdentity == photo.cameraIdentity && it.status == DownloadStatus.WAITING
             }
             val message = "蓝牙正在接收便携 JPEG"
             val next = previous?.copy(photo = photo, status = DownloadStatus.RUNNING, message = message)

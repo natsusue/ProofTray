@@ -34,7 +34,7 @@ import no.nordicsemi.android.ble.callback.FailCallback
 
 @SuppressLint("MissingPermission")
 internal class SonyControl(private val context: Context, private val deviceForAddress: (String) -> BluetoothDevice,
-    private val report: (Boolean) -> Unit) {
+    private val report: (String?) -> Unit) {
     private var current: SonyBleSession? = null
     private val connections = Mutex()
     private val locationRevision = MutableStateFlow(0)
@@ -83,6 +83,12 @@ internal class SonyControl(private val context: Context, private val deviceForAd
         }
     }
 
+    suspend fun connectControl(address: String) {
+        val device = deviceForAddress(address)
+        check(device.bondState == BluetoothDevice.BOND_BONDED) { "索尼系统配对已移除，请重新添加相机" }
+        session(device)
+    }
+
     suspend fun connection(address: String, manual: CameraConnection? = null): CameraConnection {
         val device = deviceForAddress(address)
         val session = session(device)
@@ -96,25 +102,27 @@ internal class SonyControl(private val context: Context, private val deviceForAd
         return session(device).networkId()
     }
 
-    suspend fun location(address: String): SonyBleSession {
+    suspend fun location(address: String, currentTarget: () -> Boolean): SonyBleSession {
         val device = deviceForAddress(address)
         check(device.bondState == BluetoothDevice.BOND_BONDED) { "请先在手机和机身确认索尼配对" }
-        val session = session(device)
+        val session = session(device, currentTarget = currentTarget)
         check(session.supportsLocation) { "此机身未提供蓝牙位置关联服务" }
         return session
     }
 
     @Synchronized fun isCurrent(session: SonyBleSession): Boolean = current === session && session.live
 
-    private suspend fun session(device: BluetoothDevice, forPairing: Boolean = false): SonyBleSession = connections.withLock {
+    private suspend fun session(device: BluetoothDevice, forPairing: Boolean = false,
+                                currentTarget: () -> Boolean = { true }): SonyBleSession = connections.withLock {
         val caller = currentCoroutineContext()
         val (previous, session) = synchronized(this) {
             caller.ensureActive()
+            check(currentTarget()) { "相机选择已变化" }
             current?.takeIf { it.live && (forPairing || it.controlReady) && it.bluetoothDevice == device }?.let { return@withLock it }
             val previous = current
             val next = SonyBleSession(context, forPairing, ::controlState) { locationRevision.update { it + 1 } }
             current = next
-            report(false)
+            report(null)
             previous to next
         }
         previous?.close()
@@ -124,7 +132,7 @@ internal class SonyControl(private val context: Context, private val deviceForAd
             if (!forPairing) session.confirmControl(device)
             synchronized(this) { check(current === session) { "索尼蓝牙连接已更换" } }
         } catch (failure: Exception) {
-            synchronized(this) { if (current === session) { current = null; report(false) } }
+            synchronized(this) { if (current === session) { current = null; report(null) } }
             session.close()
             throw failure
         }
@@ -132,14 +140,14 @@ internal class SonyControl(private val context: Context, private val deviceForAd
     }
 
     @Synchronized private fun controlState(session: SonyBleSession, ready: Boolean) {
-        if (current === session) report(ready && session.controlReady)
+        if (current === session) report(session.bluetoothDevice?.address.takeIf { ready && session.controlReady })
     }
 
     fun close() {
         val old = synchronized(this) {
             val session = current ?: return
             current = null
-            report(false)
+            report(null)
             session
         }
         old.close()

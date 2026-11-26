@@ -33,6 +33,7 @@ import org.prooftray.app.domain.SavedFilter
 import org.prooftray.app.ui.LibraryUiState
 import org.prooftray.app.ui.PhotoEditorState
 import org.prooftray.app.camera.CameraController
+import org.prooftray.app.camera.CameraChangeContext
 import org.prooftray.app.domain.DownloadState
 import org.prooftray.app.color.LutRepository
 import org.prooftray.app.domain.ColorLookSettings
@@ -52,6 +53,8 @@ import org.prooftray.app.domain.DownloadVariant
 import org.prooftray.app.domain.selectedPhotos
 import org.prooftray.app.camera.CameraLocationService
 import org.prooftray.app.data.MediaDeleteTarget
+import org.prooftray.app.domain.CameraBrand
+import org.prooftray.app.domain.SavedCamera
 import org.prooftray.app.data.MediaDeletion
 import org.prooftray.app.data.PhotoPreviewLoader
 import org.prooftray.app.domain.ExportFormat
@@ -364,21 +367,38 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     fun setLocationSync(value: Boolean) = preferences.update { it.copy(locationSync = value) }
     fun setPairingTimeSync(value: Boolean) = preferences.update { it.copy(pairingTimeSync = value) }
     fun setRequestedTimeSync(value: Boolean) = preferences.update { it.copy(requestedTimeSync = value) }
-    fun chooseControlDevice(address: String) {
-        if (preferences.state.value.sonySelected && address.isEmpty()) {
-            camera.disconnect()
-            preferences.update { it.copy(sonySelected = false, sonyAddress = "", sonyName = "") }
-            return
+    private fun editCameraAssociation(change: () -> Unit) {
+        runCatching {
+            val current = camera.state.value
+            check(!current.connecting && current.accessRequest == null && current.controlAttempt == null &&
+                !camera.bleState.value.pairingInProgress) { "请先结束连接操作" }
+            check(camera.changeWhenIdle(change)) { "请先完成或取消当前传输" }
+        }.onFailure { showError(it.message ?: "无法更改相机关联") }
+    }
+
+    fun chooseControlDevice(address: String) = editCameraAssociation {
+        val selected = preferences.state.value.cameras.selected
+        if (address == selected?.address) return@editCameraAssociation
+        check(!camera.state.value.connected && !camera.bleState.value.authenticated && camera.state.value.sonyControlAddress == null) {
+            "请先断开当前相机，再手动更换控制设备"
         }
-        if (address != preferences.state.value.controlAddress) camera.disconnect()
-        preferences.update {
-            it.copy(controlAddress = address, controlSerial = if (it.controlAddress == address) it.controlSerial else "",
-                controlName = state.value.pairedDevices.find { device -> device.address == address }?.name.orEmpty())
+        preferences.changeCameras { registry ->
+            if (address.isEmpty()) selected?.let { registry.remove(it.id) } ?: registry
+            else {
+                val known = registry.devices.find { it.brand == CameraBrand.NIKON && it.address.equals(address, true) }
+                val name = (state.value.ble.cameras + state.value.pairedDevices).find { it.address == address }?.name.orEmpty()
+                when {
+                    known != null -> registry.select(known.id)
+                    selected?.brand == CameraBrand.NIKON && selected.pending && !selected.hasControlAddress ->
+                        registry.save(selected.copy(address = address, name = name), selected.id)
+                    else -> registry.save(SavedCamera(CameraBrand.NIKON, address, name, pending = true))
+                }
+            }
         }
     }
-    fun chooseTransferDevice(address: String) {
-        if (address != preferences.state.value.transferAddress) camera.disconnectControl()
-        preferences.update { it.copy(transferAddress = address) }
+    fun chooseTransferDevice(address: String, origin: CameraChangeContext, approval: CameraChangeContext?) {
+        runCatching { camera.chooseTransferDevice(address, origin, approval) }
+            .onFailure { showError(it.message ?: "无法更改经典蓝牙传图设备") }
     }
     fun setBluetoothRole(value: BluetoothRole) = preferences.update { it.copy(bluetoothRole = value) }
     fun refreshPairedDevices() {
